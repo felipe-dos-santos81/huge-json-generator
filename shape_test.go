@@ -115,11 +115,12 @@ func TestGiantTinySize(t *testing.T) {
 	}
 }
 
-// A write error during deep's closing pass stops run with that error.
+// A write error during deep's closing pass stops run with that error. Deep
+// output is about 3/4 openers and 1/4 closers, so 9/10 lands in the tail.
 func TestTailWriteErrorStops(t *testing.T) {
-	body := len(gen(t, "-shape", "deep", "-size", "3MB")) / 2
-	_, written, err := run(&failWriter{left: body + 1000}, cfgFor(t, "-shape", "deep", "-size", "3MB", "-workers", "4"))
-	if err == nil || err.Error() != "disk full" || written != int64(body+1000) {
-		t.Fatalf("err = %v, written = %d; want disk full after %d bytes", err, written, body+1000)
+	inTail := len(gen(t, "-shape", "deep", "-size", "3MB")) * 9 / 10
+	_, written, err := run(&failWriter{left: inTail}, cfgFor(t, "-shape", "deep", "-size", "3MB", "-workers", "4"))
+	if err == nil || err.Error() != "disk full" || written != int64(inTail) {
+		t.Fatalf("err = %v, written = %d; want disk full after %d bytes", err, written, inTail)
 	}
 }
