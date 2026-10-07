@@ -58,9 +58,24 @@ func TestParseConfigRejects(t *testing.T) {
 		{"-depth", "11"}, {"-null", "NaN"}, {"-empty", "NaN"},
 		{"-ndjson", "true"}, {"10MB"},
 		{"-workers", "abc"}, {"-bogus"},
+		{"-shape", "nope"}, {"-shape", "deep", "-corpus"}, {"-cap", "1MB"},
+		{"-shape", "deep", "-cap", "0"}, {"-shape", "deep", "-cap", "300MB"},
+		{"-shape", "deep", "-ndjson"}, {"-corpus", "-schema", "typed"},
+		{"-shape", "deep", "-depth", "3"}, {"-corpus", "-chunk", "5"},
 	} {
 		if _, err := parseConfig(args); err == nil {
 			t.Errorf("parseConfig(%q) succeeded, want error", args)
+		}
+	}
+}
+
+func TestParseConfigModes(t *testing.T) {
+	for _, args := range [][]string{
+		{"-shape", "deep"}, {"-shape", "bignum", "-cap", "1MB", "-ndjson"},
+		{"-corpus"}, {"-corpus", "-ndjson", "-null", "0.5"},
+	} {
+		if _, err := parseConfig(args); err != nil {
+			t.Errorf("parseConfig(%q): %v", args, err)
 		}
 	}
 }

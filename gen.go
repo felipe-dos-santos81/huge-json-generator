@@ -129,6 +129,9 @@ Streams random JSON of the target size to stdout.
   jsongen -size 50GB > big.json                      # one giant array
   jsongen -size 50GB -ndjson > big.ndjson            # one object per line
   jsongen -size 50GB -schema typed -ndjson | loader  # stable types per key
+  jsongen -shape deep -size 1GB | parser             # one giant extreme value
+  jsongen -shape escapes -cap 10MB -ndjson           # records of 10 MB extreme values
+  jsongen -corpus -size 100MB                        # labelled y/n/i parser test cases
 
 Flags:
 `)
@@ -149,14 +152,26 @@ func parseConfig(args []string) (config, error) {
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
-	if err := cfg.validate(); err != nil {
+	set := map[string]bool{}
+	fs.Visit(func(f *flag.Flag) { set[f.Name] = true })
+	if err := cfg.validate(set); err != nil {
 		return config{}, err
 	}
 	return cfg, nil
 }
 
-func (c config) validate() error {
+// validate checks flag values; set names the flags given explicitly, so
+// flags that have no effect in the chosen mode are rejected, not ignored.
+func (c config) validate(set map[string]bool) error {
 	switch {
+	case c.shape != "" && c.corpus:
+		return errors.New("-shape and -corpus cannot be combined")
+	case set["cap"] && c.shape == "":
+		return errors.New("-cap needs -shape")
+	case c.shape != "" && c.cap == 0 && c.ndjson:
+		return errors.New("-ndjson needs records, but a giant -shape is one document (add -cap)")
+	case (c.shape != "" || c.corpus) && (set["schema"] || set["depth"] || set["chunk"]):
+		return errors.New("-schema, -depth and -chunk only apply to records")
 	case !(c.pNull >= 0) || !(c.pEmpty >= 0) || !(c.pNull+c.pEmpty <= 1): // NaN fails
 		return errors.New("-null and -empty must be >= 0 and sum to at most 1")
 	case c.depth < 0 || c.depth > maxDepth:
