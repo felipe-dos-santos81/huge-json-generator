@@ -448,3 +448,20 @@ func TestFixedRange(t *testing.T) {
 		t.Errorf("got %d distinct values, want exactly 0.0..0.9: %v", len(seen), seen)
 	}
 }
+
+// Records output must stay byte-identical as new sources are added. The
+// hashes were recorded before the source refactor; they hold for one Go
+// toolchain (math/rand/v2 outputs may change between releases).
+func TestRecordsBytesUnchanged(t *testing.T) {
+	for _, c := range []struct{ schema, ndjson, sha string }{
+		{"chaos", "false", "cd8601c086ad349498604d50c3f97f8a12d1e908c61e7649722fb14ebccbf2a5"},
+		{"chaos", "true", "5692b2f4810af0c26acebb2443bbb742d57ad693ff566c0aab171622ea3d4af7"},
+		{"typed", "false", "a605078ce2f19a3a9979ba351cb9e1a480d823a8fc12fe5cebaca4eea1ce981d"},
+		{"typed", "true", "91f4ef404da704182191519850476a2ad02394853907b84efc9977e7ac12091e"},
+	} {
+		out := gen(t, "-size", "2MB", "-seed", "9", "-depth", "6", "-schema", c.schema, "-ndjson="+c.ndjson)
+		if got := fmt.Sprintf("%x", sha256.Sum256(out)); got != c.sha {
+			t.Errorf("%s ndjson=%s: sha256 %s, want %s", c.schema, c.ndjson, got, c.sha)
+		}
+	}
+}

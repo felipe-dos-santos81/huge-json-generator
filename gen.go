@@ -161,14 +161,14 @@ type chunkOut struct {
 	buf *[]byte
 }
 
-// startWorkers launches cfg.workers goroutines. Each takes a token, claims the
-// next chunk index, builds that chunk into a pooled buffer and sends it on
-// results, until stop is closed.
-func startWorkers(cfg config, pool *sync.Pool, tokens <-chan struct{}, results chan<- chunkOut, stop <-chan struct{}) {
+// startWorkers launches cfg.workers goroutines, each with its own source. Each
+// takes a token, claims the next chunk index, builds that chunk into a pooled
+// buffer and sends it on results, until stop is closed.
+func startWorkers(cfg config, build func(s source, dst []byte, i int64) []byte, pool *sync.Pool, tokens <-chan struct{}, results chan<- chunkOut, stop <-chan struct{}) {
 	var next atomic.Int64
 	for range cfg.workers {
 		go func() {
-			b := newBuilder(cfg)
+			s := newSource(cfg)
 			for {
 				select {
 				case <-tokens:
@@ -177,7 +177,7 @@ func startWorkers(cfg config, pool *sync.Pool, tokens <-chan struct{}, results c
 				}
 				i := next.Add(1) - 1
 				bp := pool.Get().(*[]byte)
-				*bp = b.chunk((*bp)[:0], i)
+				*bp = build(s, (*bp)[:0], i)
 				select {
 				case results <- chunkOut{i, bp}:
 				case <-stop:
@@ -188,10 +188,10 @@ func startWorkers(cfg config, pool *sync.Pool, tokens <-chan struct{}, results c
 	}
 }
 
-// run writes the payload to w and reports how many records and bytes it wrote.
-// Workers build chunks concurrently; at most 2*workers chunks are in flight and
-// w receives them strictly in index order.
-func run(w io.Writer, cfg config) (records, written int64, err error) {
+// pipeline builds chunks 0, 1, 2, ... with build on cfg.workers goroutines and
+// hands them to emit strictly in index order, until emit reports no more or an
+// error. At most 2*workers chunks are in flight.
+func pipeline(cfg config, build func(s source, dst []byte, i int64) []byte, emit func(i int64, chunk []byte) (more bool, err error)) error {
 	stop := make(chan struct{})
 	defer close(stop) // releases workers on every return path
 
@@ -201,23 +201,10 @@ func run(w io.Writer, cfg config) (records, written int64, err error) {
 	}
 	results := make(chan chunkOut)
 	pool := sync.Pool{New: func() any { b := make([]byte, 0, 1<<20); return &b }}
-	startWorkers(cfg, &pool, tokens, results, stop)
+	startWorkers(cfg, build, &pool, tokens, results, stop)
 
-	write := func(p []byte) error {
-		n, err := w.Write(p)
-		written += int64(n)
-		return err
-	}
-	if !cfg.ndjson {
-		if err = write([]byte("[\n")); err != nil {
-			return
-		}
-	}
-
-	start := time.Now()
-	nextReport := int64(1e9)
 	pending := map[int64]*[]byte{}
-	for idx := int64(0); idx == 0 || written < cfg.target; idx++ {
+	for idx := int64(0); ; idx++ {
 		bp, ok := pending[idx]
 		for !ok {
 			c := <-results
@@ -228,25 +215,60 @@ func run(w io.Writer, cfg config) (records, written int64, err error) {
 			}
 		}
 		delete(pending, idx)
-		err = write(*bp)
+		more, err := emit(idx, *bp)
 		pool.Put(bp)
 		tokens <- struct{}{}
-		if err != nil {
-			return
+		if err != nil || !more {
+			return err
 		}
-		records += int64(cfg.chunk)
+	}
+}
 
+// run writes the payload to w: header, body chunks until the size target
+// (counting any tail still to come), the tail chunks if the source has them,
+// then the trailer. It returns a summary of what was written and the byte count.
+func run(w io.Writer, cfg config) (summary string, written int64, err error) {
+	src := newSource(cfg)
+	start := time.Now()
+	nextReport := int64(1e9)
+	write := func(p []byte) error {
+		n, err := w.Write(p)
+		written += int64(n)
 		if cfg.progress != nil && written >= nextReport {
 			report(cfg.progress, written, cfg.target, start)
 			for nextReport <= written {
 				nextReport += 1e9
 			}
 		}
+		return err
 	}
-	if !cfg.ndjson {
-		err = write([]byte("\n]\n"))
+
+	if err = write(src.header()); err != nil {
+		return
 	}
-	return
+	var n, pendingTail int64
+	err = pipeline(cfg, source.chunk, func(i int64, c []byte) (bool, error) {
+		n = i + 1
+		if err := write(c); err != nil {
+			return false, err
+		}
+		pendingTail += src.tailLen(c)
+		return written+pendingTail < cfg.target, nil
+	})
+	if err != nil {
+		return
+	}
+	if pendingTail > 0 {
+		tail := func(s source, dst []byte, j int64) []byte { return s.tail(dst, n, j) }
+		err = pipeline(cfg, tail, func(j int64, c []byte) (bool, error) {
+			return j+1 < n, write(c)
+		})
+		if err != nil {
+			return
+		}
+	}
+	err = write(src.trailer())
+	return src.summary(n), written, err
 }
 
 // report prints one progress line: bytes written, target, and average rate.
@@ -267,11 +289,11 @@ func main() {
 	}
 	cfg.progress = os.Stderr
 	start := time.Now()
-	records, written, err := run(os.Stdout, cfg)
+	summary, written, err := run(os.Stdout, cfg)
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "write:", err)
 		os.Exit(1)
 	}
-	fmt.Fprintf(os.Stderr, "done: %d records, %d bytes in %s\n",
-		records, written, time.Since(start).Round(time.Millisecond))
+	fmt.Fprintf(os.Stderr, "done: %s, %d bytes in %s\n",
+		summary, written, time.Since(start).Round(time.Millisecond))
 }
