@@ -57,6 +57,7 @@ type config struct {
 	schema   schema
 	workers  int
 	chunk    int
+	shape    shapeKind // "": records
 	progress io.Writer // nil: no progress output
 }
 
@@ -105,6 +106,7 @@ func flags(cfg *config) *flag.FlagSet {
 	fs.TextVar(&cfg.schema, "schema", chaos, "chaos (any type per key) or typed (one type per key)")
 	fs.IntVar(&cfg.workers, "workers", runtime.NumCPU(), "generator goroutines; does not change output")
 	fs.IntVar(&cfg.chunk, "chunk", 1024, "records per chunk; changes output")
+	fs.TextVar(&cfg.shape, "shape", shapeKind(""), "write one giant value of this shape: "+shapeNames())
 	return fs
 }
 

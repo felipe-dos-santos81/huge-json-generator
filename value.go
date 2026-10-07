@@ -85,6 +85,12 @@ func (b *builder) someFields(depth int) {
 // strN writes a quoted JSON string of n runes drawn from alphabet.
 func (b *builder) strN(alphabet []rune, n int) {
 	b.buf = append(b.buf, '"')
+	b.chars(alphabet, n)
+	b.buf = append(b.buf, '"')
+}
+
+// chars writes n runes drawn from alphabet, escaped for a JSON string body.
+func (b *builder) chars(alphabet []rune, n int) {
 	for range n {
 		c := alphabet[b.r.IntN(len(alphabet))]
 		switch c {
@@ -111,7 +117,6 @@ func (b *builder) strN(alphabet []rune, n int) {
 			}
 		}
 	}
-	b.buf = append(b.buf, '"')
 }
 
 // textLen is a short length, with an occasional long one.

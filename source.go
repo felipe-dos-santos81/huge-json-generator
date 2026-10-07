@@ -16,6 +16,9 @@ type source interface {
 
 // newSource returns a fresh source for the configured mode.
 func newSource(cfg config) source {
+	if cfg.shape != "" {
+		return newShape(cfg)
+	}
 	return newBuilder(cfg)
 }
 
