@@ -25,15 +25,19 @@ its logic is otherwise kept.
    — never on `-workers`.
 3. In `typed` mode every key path has one JSON type (ignoring `null`); integers
    stay within ±(2^53−1).
-4. With N workers, generation outpaces a fast consumer (target: multi-GB/s on
-   this machine; measured, not assumed).
+4. With N workers, generation outpaces typical consumers. Measured on the
+   prototype (14 cores, to /dev/null): chaos ≈ 1.6 GB/s, typed ≈ 2.5 GB/s;
+   1 worker: 177 / 318 MB/s. simdjson on chaos may out-run a pipe — generate
+   to disk first for that case.
 5. Memory is bounded by ~2 × workers × chunk size, independent of `-size`.
 
 ## Layout
 
 ```
-go.mod        module jsongen; go 1.27.1 (pinned — rand/v2 method outputs are
-              not guaranteed stable across Go versions; only PCG itself is)
+go.mod        module jsongen; go 1.27.1. go.mod cannot stop a newer local
+              toolchain from being used, so byte-identical output is promised
+              per toolchain only (rand/v2 method outputs may change between
+              releases); reproduce old files with GOTOOLCHAIN=go1.27.1
 gen.go        main, flags/config, run(), chunk pipeline, writer
 value.go      chaos + typed value generators, string escaping
 gen_test.go   stdlib-only tests (see Testing)
@@ -51,7 +55,7 @@ gen_test.go   stdlib-only tests (see Testing)
 | `-depth` | 4 | max nesting depth (chaos: any value; typed: `payload` recursion) |
 | `-schema` | `chaos` | `chaos` \| `typed` |
 | `-workers` | `runtime.NumCPU()` | generator goroutines; ≥ 1; does not affect output |
-| `-chunk` | 1024 | records per chunk; ≥ 1; **part of the determinism key**; final default fixed after measuring (target ≈ 1–2 MB/chunk) |
+| `-chunk` | 1024 | records per chunk; ≥ 1; **part of the determinism key**. Measured: throughput flat from 128 to 4096; at 1024 a chunk is ≈ 2.3 MB (chaos) / ≈ 0.4 MB (typed) |
 
 stdout carries only JSON. stderr: progress line every 1 GB written
 (`X / Y GB  Z MB/s`) and a final `done: <records> records, <bytes> bytes in <dur>`.
@@ -72,10 +76,10 @@ claim idx ──► worker × N ──(idx, buf)──► writer: reorder ──
 - **Chunk definition.** Chunk `i` holds records with global ids
   `i·K … i·K+K−1` (K = `-chunk`). A record's leading `,\n` (array mode) depends
   only on `id > 0`, so every chunk is self-contained.
-- **Per-chunk RNG.** `rand.New(rand.NewPCG(mix(seed), mix(seed ^ uint64(i))))`
-  with `mix` = SplitMix64 finalizer. Hashing is required: Go's PCG takes its two
-  seeds as the raw 128-bit state, so unhashed `(seed, i)` and `(seed, i+1)`
-  would be adjacent points on one stream and produce near-identical chunks.
+- **Per-chunk RNG.** `rand.NewPCG(seed, uint64(i))`, reseeded via `PCG.Seed`.
+  No extra hashing: measured, unhashed neighbouring seeds already give
+  uncorrelated output (DXSM output permutation), and distinct 128-bit start
+  states never overlap in practice.
 - **Workers.** Loop: acquire a token from a buffered channel of capacity 2N
   (select on `done`), claim `i = next.Add(1) − 1`, build the chunk into a
   buffer from a `sync.Pool`, send `(i, buf)` on the results channel (select on
@@ -99,10 +103,11 @@ claim idx ──► worker × N ──(idx, buf)──► writer: reorder ──
   draft's fixed order, each included with probability ⅔ (no duplicate keys).
 - Each value: `null` with probability `-null`; else empty with probability
   `-empty`; else a normal value.
-- `str(alphabet)` — the draft's escaping (`\" \\ \n \t \r \b \f`, other
+- `strN(alphabet, n)` — the draft's escaping (`\" \\ \n \t \r \b \f`, other
   `< 0x20` as `\u00XX`, everything else UTF-8), parameterized by alphabet.
-  Optimize (one `Uint64` per 8 characters) only if profiling shows it is the
-  bottleneck.
+  Profiled: it is ~60% of chaos CPU, but pre-escaped lookup tables gained only
+  ~10% single-threaded and nothing at 14 workers (the per-character RNG draw
+  dominates), so the draft's loop stays.
 
 ### `chaos`
 
@@ -154,7 +159,9 @@ allowed); empty picks uniformly from `""`, `[]`, `{}`; scalars only at max depth
 ## Testing
 
 `main()` only parses flags into `config` and calls
-`run(w io.Writer, cfg config) error`; tests drive `run` with a `bytes.Buffer`.
+`run(w io.Writer, cfg config) (records, written int64, err error)`; tests drive
+`run` with a `bytes.Buffer`. Progress goes to `cfg.progress` (nil in tests,
+`os.Stderr` in `main`).
 
 `gen_test.go` (stdlib only):
 
