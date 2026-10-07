@@ -9,7 +9,7 @@ size ?= 1GB
 schema ?= chaos
 EXT = $(if $(ndjson),ndjson,json)
 
-.PHONY: help build clean generate bench test test-race vet fmt check
+.PHONY: help build clean generate bench shape corpus test test-race vet fmt check
 
 # ── Environment ──────────────────────────────────────────────────────────────
 
@@ -39,6 +39,14 @@ bench: build ## Measure throughput to /dev/null for both schemas (usage: make be
 		printf '%-6s ' $$s; \
 		$(BIN) -size "$(size)" -schema $$s $(args) 2>&1 >/dev/null | grep '^done'; \
 	done
+
+shape: build ## Write one extreme value to out/ (usage: make shape shape=deep [size=1GB] [cap=10MB])
+	@mkdir -p $(OUT_DIR)
+	$(BIN) -shape "$(shape)" -size "$(size)" $(if $(cap),-cap "$(cap)" -ndjson) $(args) > $(OUT_DIR)/shape-$(shape)-$(size).$(if $(cap),ndjson,json)
+
+corpus: build ## Write labelled parser test cases to out/ (usage: make corpus [size=100MB])
+	@mkdir -p $(OUT_DIR)
+	$(BIN) -corpus -size "$(size)" $(args) > $(OUT_DIR)/corpus-$(size).ndjson
 
 # ── Development ───────────────────────────────────────────────────────────────
 

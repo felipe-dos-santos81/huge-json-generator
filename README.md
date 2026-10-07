@@ -40,6 +40,35 @@ means the field's own empty form; numbers and booleans are never empty.
 | `-workers` | CPU count | Generator goroutines; never changes the output |
 | `-chunk` | `1024` | Records per chunk; changes the output |
 
+## Parser stress
+
+Three more modes produce input that breaks parsers rather than loads pipelines.
+
+| Mode | Example | Output |
+|---|---|---|
+| Giant shape | `jsongen -shape deep -size 1GB` | one valid document whose single value fills `-size` |
+| Capped shape | `jsongen -shape escapes -cap 10MB -size 1GB -ndjson` | records `{"id":N,"v":...}`, each value about `-cap` bytes |
+| Corpus | `jsongen -corpus -size 100MB` | NDJSON test cases `{"id","verdict","category","doc_b64"}` |
+
+| `-shape` | Value | Finds |
+|---|---|---|
+| `deep` | nested `[` and `{"k":` around a `0` leaf | stack overflow, recursion limits |
+| `wide-object` | `{"k0":v,"k1":v,...}` | hash-map growth, out-of-memory |
+| `wide-array` | `[v,v,...]` | array growth, out-of-memory |
+| `longstring` | one string of ASCII and 2–4-byte UTF-8 | buffer growth, UTF-8 validation speed |
+| `escapes` | one string of only escapes, surrogate pairs and raw multi-byte UTF-8 | escape-decoding slow paths |
+| `bignum` | `1` + digits + `.5e-7` | big-number parsing, float conversion |
+
+Corpus verdicts follow RFC 8259 in the JSONTestSuite convention: `y` must be
+accepted, `n` must be rejected, `i` is implementation-defined. Every `y` and `n`
+document is checked against strict RFC 8259 syntax plus UTF-8 validation while
+it is generated. Filter with `jq`, for example
+`jq -c 'select(.verdict=="n")'`, and decode `doc_b64` before feeding a parser.
+
+Giant values stream at 1–2 GB/s in under 100 MB of memory. Capped chunks hold at
+least one value, so memory grows to about 2 × workers × `-cap` (at most 256 MB
+per value). `-schema`, `-depth` and `-chunk` apply only to records.
+
 ## Determinism
 
 The same flags produce byte-identical output, whatever `-workers` is. A smaller

@@ -61,6 +61,9 @@ README.md     user docs; AGENTS.md: notes for coding agents
 | `-workers` | `runtime.NumCPU()` | generator goroutines; ≥ 1; does not affect output |
 | `-chunk` | 1024 | records per chunk; ≥ 1; **part of the determinism key**. Measured: throughput flat from 128 to 4096; at 1024 a chunk is ≈ 2.3 MB (chaos) / ≈ 0.4 MB (typed) |
 
+Parser-stress modes (`-shape`, `-cap`, `-corpus`): see
+`2026-10-07-parser-stress-design.md`.
+
 stdout carries only JSON. stderr: one newline-terminated progress line per
 1 GB written (`X / Y GB  Z MB/s`, average rate) and a final
 `done: <records> records, <bytes> bytes in <dur>`. `-h` prints a synopsis,

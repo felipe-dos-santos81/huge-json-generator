@@ -40,7 +40,7 @@ Backward compatible: without new flags, jsongen behaves exactly as today.
 | `jsongen -corpus -size 1GB` | NDJSON test cases (see Corpus) |
 
 - `-shape`: `deep`, `wide-object`, `wide-array`, `longstring`, `escapes`, `bignum`.
-- `-cap`: byte size of each extreme value, any shape (`deep` 10MB ≈ 5M levels);
+- `-cap`: byte size of each extreme value, any shape (`deep` 10MB ≈ 2.5M levels: openers average 3 bytes plus a 1-byte closer);
   range (0, 256MB].
 - `-size`, `-seed`, `-workers` apply to every mode. `-null`/`-empty` apply to
   records, to the small values inside `wide-*`, and to the valid records the
@@ -98,7 +98,7 @@ record's `v` is one value of about `-cap` bytes, built whole in its chunk).
 | `wide-object` | `{"k<idx>":v,…}`: unique sequential keys, small values (chaos scalars, null, empties) | hash-map growth, OOM | 2^14 members |
 | `wide-array` | `[v,…]`, same small values | array growth, OOM | 2^14 elements |
 | `longstring` | `"…"` from the typed alphabet (ASCII + 2/3/4-byte UTF-8) | buffer growth, OOM, UTF-8 validation | 2^18 runes |
-| `escapes` | `"…"` of only `\n \" \\ \/ \t`, `\u00XX`/`\uXXXX`, surrogate pairs (`😀`), raw multi-byte UTF-8 | escape-decoding slow paths | 2^17 units |
+| `escapes` | `"…"` of only `\b \f \n \r \t \" \\ \/`, `\u00XX`/`\uXXXX`, surrogate pairs (`😀`), raw multi-byte UTF-8 | escape-decoding slow paths | 2^17 units |
 | `bignum` | `1` + digits + `.5e-7` | big-number parsing, huge-mantissa float conversion | 2^20 digits |
 
 - `deep` tail: `tail(n, j)` regenerates body chunk `n−1−j` and mirrors it in

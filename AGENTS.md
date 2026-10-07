@@ -11,6 +11,9 @@ do not add dependencies.
 | `value.go` | Per-worker `builder`: `chunk()` framing, `record`/`someFields` key selection, `strN` escaping, shared alphabets |
 | `chaos.go` | `chaosValue`: any key may hold any type |
 | `typed.go` | `fields` table (every key, in order, with its typed generator) and the `typed*` helpers |
+| `source.go` | `source` interface (header, body chunks, optional tail, trailer) and the records source |
+| `shape.go` | `-shape`: giant values (`shapeSource`, `deep` mirrored tail) and capped records (`cappedSource`) |
+| `corpus.go` | `-corpus`: the y/n/i `catalogue`, mutations of valid records, the `acceptable` reference check |
 | `gen_test.go` | All tests, stdlib `testing` only |
 | `docs/superpowers/specs/` | Design spec: the authority on behaviour |
 | `docs/superpowers/plans/` | Implementation plan (historical) |
@@ -39,6 +42,14 @@ make bench      # throughput check after touching value generation
 - **`-depth` is capped at 10** (`maxDepth`), because chaos memory grows about 1.4× per level.
 - **Refactors must not change output bytes.** Compare `shasum` of a fixed-seed
   run before and after, for both schemas and both output forms.
+
+- **Every mode is a `source`.** `chunk` and `tail` must be pure functions of the
+  config and their indices. `run` writes the body until the target (counting
+  pending tail bytes), then the tail (`deep` closers, mirrored from regenerated
+  body chunks), then the trailer.
+- **Never write `\u` followed by four hex digits in Go source.** Build JSON
+  escapes with `uEscape` and runes with numeric literals (`0xFEFF`); generated
+  edits have turned such escapes into raw characters before.
 
 ## Gotchas
 
