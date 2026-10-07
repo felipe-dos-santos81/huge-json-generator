@@ -1,68 +1,66 @@
-# Makefile for jsongen — Huge Random JSON Payload Generator
-# Targets: help → build → generate/bench → test/check → clean
+# Makefile for jsongen — Huge Random JSON Generator
+# Generate targets write to out/ and accept size= (default 1GB) and args="extra flags".
 SERVICE = jsongen
 
 # Variables
-BIN = bin/jsongen
+BIN     = bin/jsongen
 OUT_DIR = out
-size ?= 1GB
+size   ?= 1GB
 schema ?= chaos
-EXT = $(if $(ndjson),ndjson,json)
+EXT     = $(if $(ndjson),ndjson,json)
 
-.PHONY: help build clean generate bench shape corpus test test-race vet fmt check
+.PHONY: help build clean generate shape corpus bench test test-race vet fmt check
 
-# ── Environment ──────────────────────────────────────────────────────────────
+# ── Build ────────────────────────────────────────────────────────────────────
 
-help: ## Print this help message
-	@printf '\033[01;32m${SERVICE} — Huge Random JSON Payload Generator\033[00;37m\n\n'
+help: ## List targets
+	@printf '\033[01;32m${SERVICE} — Huge Random JSON Generator\033[00;37m\n\n'
 	@printf "\033[33mUsage:\033[0m\n  make [target] [arg=\"val\"...]\n\n\033[33mTargets:\033[0m\n"
 	@grep -E '^[-a-zA-Z0-9_\.\/]+:.*?## .*$$' $(MAKEFILE_LIST) | \
 		awk 'BEGIN {FS = ":.*?## "}; \
-		{printf "  \033[36m%-14s\033[0m %s\n", $$1, $$2}'
+		{printf "  \033[36m%-10s\033[0m %s\n", $$1, $$2}'
 
-build: ## Build the binary into bin/jsongen
+build: ## Build bin/jsongen
 	go build -o $(BIN) .
 
-clean: ## Remove bin/ and out/ (generated payloads)
+clean: ## Remove bin/ and out/
 	rm -rf bin $(OUT_DIR)
-	@echo "Cleanup complete."
 
 # ── Generate ─────────────────────────────────────────────────────────────────
 
-generate: build ## Write a payload to out/ (usage: make generate size=50GB [schema=typed] [ndjson=1] [args="-seed 7 -depth 8"])
+generate: build ## Records: make generate [schema=typed] [ndjson=1]
 	@mkdir -p $(OUT_DIR)
-	@echo "Generating $(size) of $(schema) JSON into $(OUT_DIR)/$(schema)-$(size).$(EXT)..."
 	$(BIN) -size "$(size)" -schema "$(schema)" $(if $(ndjson),-ndjson) $(args) > $(OUT_DIR)/$(schema)-$(size).$(EXT)
 
-bench: build ## Measure throughput to /dev/null for both schemas (usage: make bench [size=1GB] [args="-workers 1"])
+shape: build ## Extreme values: make shape shape=deep [cap=10MB] [ndjson=1]
+	@mkdir -p $(OUT_DIR)
+	$(BIN) -shape "$(shape)" -size "$(size)" $(if $(cap),-cap "$(cap)") $(if $(ndjson),-ndjson) $(args) > $(OUT_DIR)/shape-$(shape)-$(size).$(EXT)
+
+corpus: build ## Labelled parser test cases: make corpus
+	@mkdir -p $(OUT_DIR)
+	$(BIN) -corpus -size "$(size)" $(args) > $(OUT_DIR)/corpus-$(size).ndjson
+
+bench: build ## Throughput of both schemas, written to /dev/null
 	@for s in chaos typed; do \
 		printf '%-6s ' $$s; \
 		$(BIN) -size "$(size)" -schema $$s $(args) 2>&1 >/dev/null | grep '^done'; \
 	done
 
-shape: build ## Write extreme values to out/ (usage: make shape shape=deep [size=1GB] [cap=10MB [ndjson=1]])
-	@mkdir -p $(OUT_DIR)
-	$(BIN) -shape "$(shape)" -size "$(size)" $(if $(cap),-cap "$(cap)") $(if $(ndjson),-ndjson) $(args) > $(OUT_DIR)/shape-$(shape)-$(size).$(EXT)
+# ── Develop ──────────────────────────────────────────────────────────────────
 
-corpus: build ## Write labelled parser test cases to out/ (usage: make corpus [size=100MB])
-	@mkdir -p $(OUT_DIR)
-	$(BIN) -corpus -size "$(size)" $(args) > $(OUT_DIR)/corpus-$(size).ndjson
-
-# ── Development ───────────────────────────────────────────────────────────────
-
-test: ## Run the unit test suite
-	go test -count=1 ./...
-
-test-race: ## Run the unit test suite under the race detector (~2 min)
-	go test -count=1 -race ./...
-
-vet: ## Run go vet
-	go vet ./...
-
-fmt: ## Format all Go files in place
-	gofmt -w .
-
-check: ## Fail on unformatted code, then vet and test (run before committing)
+check: ## gofmt check, vet and tests (run before committing)
 	@test -z "$$(gofmt -l .)" || { gofmt -l .; echo "run: make fmt"; exit 1; }
 	go vet ./...
 	go test -count=1 ./...
+
+test: ## Tests
+	go test -count=1 ./...
+
+test-race: ## Tests under the race detector (slow)
+	go test -count=1 -race ./...
+
+vet: ## go vet
+	go vet ./...
+
+fmt: ## Format Go files in place
+	gofmt -w .

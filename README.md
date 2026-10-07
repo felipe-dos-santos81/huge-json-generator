@@ -1,88 +1,75 @@
 # jsongen
 
-Streams a random JSON payload of any size (50 GB and beyond) to stdout, with
-`null` and empty values (`""`, `[]`, `{}`) mixed in. Memory stays constant, the
-output is deterministic, and generation runs on all cores at 1.5–3 GB/s.
-
-Standard library only (Go 1.27.1).
+Streams random JSON of any size to stdout, 50 GB and beyond, with `null` and
+empty values mixed in. Memory stays bounded, output is deterministic, and
+records stream at 1.5–3 GB/s on all cores. Go 1.27.1, standard library only.
 
 ## Quick start
 
 ```sh
-make build                                        # → bin/jsongen
-bin/jsongen -size 50GB > big.json                 # one giant array
-bin/jsongen -size 50GB -ndjson > big.ndjson       # one object per line
-bin/jsongen -size 50GB -schema typed -ndjson | your-loader   # no disk needed
-make generate size=10GB schema=typed ndjson=1     # → out/typed-10GB.ndjson
+make build                                                  # → bin/jsongen
+bin/jsongen -size 50GB > big.json                           # one array
+bin/jsongen -size 50GB -ndjson > big.ndjson                 # one object per line
+bin/jsongen -size 50GB -schema typed -ndjson | your-loader  # no disk needed
+bin/jsongen -shape deep -size 1GB | your-parser             # one extreme value
+bin/jsongen -corpus -size 100MB > cases.ndjson              # labelled parser tests
 ```
 
-## Schemas
+`make help` lists shortcuts that write to `out/`.
 
-| `-schema` | For | Values |
+## Modes
+
+| Mode | Use it for | Output |
 |---|---|---|
-| `chaos` (default) | parser stress tests, benchmarks | Any key holds any type. Strings include escapes, control characters (`\u0001`) and 2–4-byte UTF-8; integers span full int64; floats may use exponents. |
-| `typed` | ingestion pipelines (Spark, BigQuery, Elasticsearch, DB import) | Every key path keeps one JSON type (plus `null`). Integers stay within ±(2^53−1), floats are fixed-point, no raw control characters. |
+| records, `-schema chaos` (default) | parser benchmarks | any key holds any type: escapes, control characters, 2–4-byte UTF-8, full-range int64, exponent floats |
+| records, `-schema typed` | pipelines (Spark, BigQuery, Elasticsearch, DB import) | one JSON type per key path (plus `null`), integers within ±(2^53−1), fixed-point floats |
+| `-shape NAME` | crashes, out-of-memory | one valid document whose single value fills `-size` |
+| `-shape NAME -cap SIZE` | performance cliffs | records `{"id":N,"v":…}`, each value about `SIZE` |
+| `-corpus` | conformance, edge cases | NDJSON cases `{"id","verdict","category","doc_b64"}` |
 
-Both schemas apply `-null` and `-empty` at every level. In `typed` mode, empty
-means the field's own empty form; numbers and booleans are never empty.
+| `-shape` | Value | Targets |
+|---|---|---|
+| `deep` | nested `[` and `{"k":` around a `0` leaf | stack overflow, recursion limits |
+| `wide-object` | `{"k0":v,"k1":v,…}` | hash-map growth, out-of-memory |
+| `wide-array` | `[v,v,…]` | array growth, out-of-memory |
+| `longstring` | one string of ASCII and 2–4-byte UTF-8 | buffer growth, UTF-8 validation |
+| `escapes` | one string of escapes, surrogate pairs and raw multi-byte UTF-8 | escape decoding |
+| `bignum` | `1`, then digits, then `.5e-7` | big-number parsing, float conversion |
+
+Corpus verdicts follow RFC 8259 in JSONTestSuite style: `y` must be accepted,
+`n` must be rejected, `i` is implementation-defined. Every `y` and `n` document
+is checked as it is generated. Decode `doc_b64` before parsing; filter with
+`jq -c 'select(.verdict=="n")'`.
 
 ## Flags
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `-size` | `50GB` | Target size: `B`/`KB`/`MB`/`GB` (decimal) or `KiB`/`MiB`/`GiB`. Output ends slightly above it (less than one chunk). |
+| `-size` | `50GB` | Target size: `B`, `KB`, `MB`, `GB`, or `KiB`, `MiB`, `GiB` |
 | `-ndjson` | off | One object per line instead of one array |
 | `-schema` | `chaos` | `chaos` or `typed` |
 | `-null` | `0.10` | Probability a value is `null` |
-| `-empty` | `0.10` | Probability a value is empty; `-null + -empty ≤ 1` |
-| `-depth` | `4` | Maximum nesting depth, `0`–`10` |
+| `-empty` | `0.10` | Probability a value is empty (`""`, `[]`, `{}`); `-null + -empty ≤ 1` |
+| `-depth` | `4` | Maximum nesting depth, 0–10 |
 | `-seed` | `42` | RNG seed |
 | `-workers` | CPU count | Generator goroutines; never changes the output |
 | `-chunk` | `1024` | Records per chunk; changes the output |
-| `-shape` | none | One giant value of that shape: `deep`, `wide-object`, `wide-array`, `longstring`, `escapes` or `bignum` |
-| `-cap` | none | With `-shape`, write records of values about this size instead, at most 256 MB |
-| `-corpus` | off | Write labelled y/n/i parser test cases as NDJSON |
+| `-shape` | none | Write one extreme value (see Modes) |
+| `-cap` | none | With `-shape`: records of values about this size, at most 256 MB |
+| `-corpus` | off | Write labelled parser test cases |
 
-## Parser stress
+A flag that would have no effect in the chosen mode, such as `-schema` with
+`-shape`, is rejected with an error.
 
-Three more modes produce input that breaks parsers rather than loads pipelines.
+## Guarantees
 
-| Mode | Example | Output |
-|---|---|---|
-| Giant shape | `jsongen -shape deep -size 1GB` | one valid document whose single value fills `-size` |
-| Capped shape | `jsongen -shape escapes -cap 10MB -size 1GB -ndjson` | records `{"id":N,"v":...}`, each value about `-cap` bytes |
-| Corpus | `jsongen -corpus -size 100MB` | NDJSON test cases `{"id","verdict","category","doc_b64"}` |
-
-| `-shape` | Value | Finds |
-|---|---|---|
-| `deep` | nested `[` and `{"k":` around a `0` leaf | stack overflow, recursion limits |
-| `wide-object` | `{"k0":v,"k1":v,...}` | hash-map growth, out-of-memory |
-| `wide-array` | `[v,v,...]` | array growth, out-of-memory |
-| `longstring` | one string of ASCII and 2–4-byte UTF-8 | buffer growth, UTF-8 validation speed |
-| `escapes` | one string of only escapes, surrogate pairs and raw multi-byte UTF-8 | escape-decoding slow paths |
-| `bignum` | `1` + digits + `.5e-7` | big-number parsing, float conversion |
-
-Corpus verdicts follow RFC 8259 in the JSONTestSuite convention: `y` must be
-accepted, `n` must be rejected, `i` is implementation-defined. Every `y` and `n`
-document is checked against strict RFC 8259 syntax plus UTF-8 validation while
-it is generated. Filter with `jq`, for example
-`jq -c 'select(.verdict=="n")'`, and decode `doc_b64` before feeding a parser.
-
-Giant values stream at 1–2 GB/s in under 100 MB of memory. Capped chunks hold at
-least one value, so memory grows to about 3 × workers × `-cap` (at most 256 MB
-per value). Flags that would have no effect are rejected rather than ignored:
-`-schema`, `-depth` and `-chunk` with `-shape` or `-corpus`; `-ndjson` with
-`-corpus` (always NDJSON) or a giant shape (one document); `-null` and `-empty`
-with shapes other than `wide-object` and `wide-array`.
-
-## Determinism
-
-The same flags produce byte-identical output, whatever `-workers` is. With
-`-ndjson` (records or capped shapes) and with `-corpus`, a smaller `-size` gives
-a prefix of a larger one. Array output matches up to its closing `]`, and a
-giant shape's value is closed differently for each size. The guarantee holds
-per Go toolchain, because `math/rand/v2` may change between releases; to
-reproduce an old file, build with `GOTOOLCHAIN=go1.27.1`.
+- **Deterministic:** the same flags give the same bytes, whatever `-workers` is,
+  for a given Go toolchain. Reproduce old files with `GOTOOLCHAIN=go1.27.1`.
+- **Prefix:** with `-ndjson` or `-corpus`, a smaller `-size` gives a prefix of a
+  larger one.
+- **Size:** output ends just above `-size`, by less than one chunk.
+- **Memory:** tens of MB for records and giant shapes; about
+  3 × workers × `-cap` for capped shapes.
 
 ## Performance
 
@@ -93,17 +80,16 @@ Measured on 14 cores, writing to `/dev/null`:
 | chaos | 0.21 GB/s | 1.8 GB/s |
 | typed | 0.35 GB/s | 3.0 GB/s |
 
-A 50 GB chaos file took 53 s. `make bench` measures your machine. simdjson can
-parse chaos output faster than it is generated, so for that benchmark write the
-file to disk first.
+A 50 GB chaos file took 53 s; a 1 GB giant shape takes under a second.
+`make bench` measures your machine. simdjson parses chaos output faster than it
+is generated, so write that benchmark's input to disk first.
 
 ## Development
 
 ```sh
-make help     # list targets
-make check    # gofmt check + vet + tests
-make test-race
+make check      # gofmt check, vet, tests; run before committing
+make test-race  # slow
 ```
 
-Design: [`docs/superpowers/specs/`](docs/superpowers/specs/). Notes for coding
-agents: [`AGENTS.md`](AGENTS.md).
+Design specs are in [`docs/superpowers/specs/`](docs/superpowers/specs/); notes
+for coding agents are in [`AGENTS.md`](AGENTS.md).
