@@ -28,7 +28,11 @@ var fields = []struct {
 			b.typedArray(4, b.typedBool)
 		})
 	}},
-	{"note", func(b *builder) { b.typedText(typedAlphabet, b.textLen) }},
+	{"note", func(b *builder) {
+		if !b.nullOrEmpty(`""`) {
+			b.strN(typedAlphabet, b.textLen())
+		}
+	}},
 	{"price", func(b *builder) { b.typedFixed(1000, 2) }},
 	{"created_at", (*builder).typedTime},
 	{"payload", func(b *builder) { b.typedPayload(1) }},
@@ -108,16 +112,11 @@ func (b *builder) typedObject(body func()) {
 	b.buf = append(b.buf, '}')
 }
 
-// typedText writes null, "", or a string of n() runes from alphabet.
-func (b *builder) typedText(alphabet []rune, n func() int) {
-	if !b.nullOrEmpty(`""`) {
-		b.strN(alphabet, n())
-	}
-}
-
 // typedStr writes null, "", or a string of minLen..maxLen runes from alphabet.
 func (b *builder) typedStr(alphabet []rune, minLen, maxLen int) {
-	b.typedText(alphabet, func() int { return minLen + b.r.IntN(maxLen-minLen+1) })
+	if !b.nullOrEmpty(`""`) {
+		b.strN(alphabet, minLen+b.r.IntN(maxLen-minLen+1))
+	}
 }
 
 // letters writes n random lowercase ASCII letters (unquoted).

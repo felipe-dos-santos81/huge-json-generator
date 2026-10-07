@@ -52,7 +52,7 @@ func (b *builder) chaosValue(depth int) {
 		b.buf = append(b.buf, '{')
 		b.key("k")
 		b.chaosValue(depth + 1)
-		b.someFields(func(int) { b.chaosValue(depth + 1) })
+		b.someFields(depth + 1)
 		b.buf = append(b.buf, '}')
 	}
 }

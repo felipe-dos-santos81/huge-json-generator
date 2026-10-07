@@ -44,16 +44,12 @@ func newBuilder(cfg config) *builder {
 func (b *builder) chunk(dst []byte, i int64) []byte {
 	b.pcg.Seed(b.cfg.seed, uint64(i))
 	b.buf = dst
-	value := func(f int) { fields[f].typed(b) }
-	if b.cfg.schema == chaos {
-		value = func(int) { b.chaosValue(1) }
-	}
 	n := int64(b.cfg.chunk)
 	for id := i * n; id < (i+1)*n; id++ {
 		if id > 0 && !b.cfg.ndjson {
 			b.buf = append(b.buf, ',', '\n')
 		}
-		b.record(id, value)
+		b.record(id)
 		if b.cfg.ndjson {
 			b.buf = append(b.buf, '\n')
 		}
@@ -61,24 +57,28 @@ func (b *builder) chunk(dst []byte, i int64) []byte {
 	return b.buf
 }
 
-// record writes {"id":id, ...} with a random subset of fields; value writes
-// the value of fields[f].
-func (b *builder) record(id int64, value func(f int)) {
+// record writes {"id":id, ...} with a random subset of fields.
+func (b *builder) record(id int64) {
 	b.buf = append(b.buf, `{"id":`...)
 	b.buf = strconv.AppendInt(b.buf, id, 10)
-	b.someFields(value)
+	b.someFields(1)
 	b.buf = append(b.buf, '}')
 }
 
 // someFields writes each field with probability 2/3, in table order so keys
-// never repeat, each preceded by a comma; value writes the value of fields[f].
-func (b *builder) someFields(value func(f int)) {
+// never repeat, each preceded by a comma. Values come from the configured
+// schema; depth only matters to chaos.
+func (b *builder) someFields(depth int) {
 	for f := range fields {
 		if b.r.IntN(3) == 0 {
 			continue
 		}
 		b.nextKey(fields[f].key)
-		value(f)
+		if b.cfg.schema == chaos {
+			b.chaosValue(depth)
+		} else {
+			fields[f].typed(b)
+		}
 	}
 }
 

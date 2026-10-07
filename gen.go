@@ -34,6 +34,17 @@ const (
 	typed schema = "typed" // every key path keeps one JSON type
 )
 
+func (s schema) MarshalText() ([]byte, error) { return []byte(s), nil }
+
+func (s *schema) UnmarshalText(text []byte) error {
+	switch v := schema(text); v {
+	case chaos, typed:
+		*s = v
+		return nil
+	}
+	return fmt.Errorf("must be %s or %s", chaos, typed)
+}
+
 const maxDepth = 10 // chaos output grows ~1.4x per nesting level
 
 type config struct {
@@ -74,16 +85,24 @@ func parseSize(s string) (int64, error) {
 	return strconv.ParseInt(u, 10, 64)
 }
 
-// flags declares every command-line flag, bound to cfg, size and schemaName.
-func flags(cfg *config, size, schemaName *string) *flag.FlagSet {
+// flags declares every command-line flag, bound to cfg's fields.
+func flags(cfg *config) *flag.FlagSet {
 	fs := flag.NewFlagSet("jsongen", flag.ContinueOnError)
-	fs.StringVar(size, "size", "50GB", "target size (B, KB, MB, GB decimal; KiB, MiB, GiB binary)")
+	cfg.target = 50e9
+	fs.Func("size", "target size: B, KB, MB, GB (decimal) or KiB, MiB, GiB (binary) (default 50GB)", func(s string) error {
+		v, err := parseSize(s)
+		if err != nil || v <= 0 {
+			return errors.New("want a positive size such as 500MB or 2GiB")
+		}
+		cfg.target = v
+		return nil
+	})
 	fs.BoolVar(&cfg.ndjson, "ndjson", false, "one object per line instead of a single array")
 	fs.Uint64Var(&cfg.seed, "seed", 42, "RNG seed; same flags give identical output")
 	fs.Float64Var(&cfg.pNull, "null", 0.10, "probability a value is null")
 	fs.Float64Var(&cfg.pEmpty, "empty", 0.10, `probability a value is empty ("", [] or {}); typed numbers/bools are never empty`)
 	fs.IntVar(&cfg.depth, "depth", 4, fmt.Sprintf("maximum nesting depth (0-%d)", maxDepth))
-	fs.StringVar(schemaName, "schema", string(chaos), "chaos (any type per key) or typed (one type per key)")
+	fs.TextVar(&cfg.schema, "schema", chaos, "chaos (any type per key) or typed (one type per key)")
 	fs.IntVar(&cfg.workers, "workers", runtime.NumCPU(), "generator goroutines; does not change output")
 	fs.IntVar(&cfg.chunk, "chunk", 1024, "records per chunk; changes output")
 	return fs
@@ -100,9 +119,7 @@ Streams random JSON of the target size to stdout.
 
 Flags:
 `)
-	var cfg config
-	var size, schemaName string
-	fs := flags(&cfg, &size, &schemaName)
+	fs := flags(new(config))
 	fs.SetOutput(w)
 	fs.PrintDefaults()
 }
@@ -111,8 +128,7 @@ Flags:
 // one-line error; -h returns flag.ErrHelp without printing anything.
 func parseConfig(args []string) (config, error) {
 	var cfg config
-	var size, schemaName string
-	fs := flags(&cfg, &size, &schemaName)
+	fs := flags(&cfg)
 	fs.SetOutput(io.Discard) // the flag package would print the whole usage on error
 	if err := fs.Parse(args); err != nil {
 		return config{}, err
@@ -120,12 +136,6 @@ func parseConfig(args []string) (config, error) {
 	if fs.NArg() > 0 {
 		return config{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
 	}
-	target, err := parseSize(size)
-	if err != nil || target <= 0 {
-		return config{}, fmt.Errorf("bad -size %q", size)
-	}
-	cfg.target = target
-	cfg.schema = schema(schemaName)
 	if err := cfg.validate(); err != nil {
 		return config{}, err
 	}
@@ -142,8 +152,6 @@ func (c config) validate() error {
 		return errors.New("-workers must be >= 1")
 	case c.chunk < 1:
 		return errors.New("-chunk must be >= 1")
-	case c.schema != chaos && c.schema != typed:
-		return fmt.Errorf("-schema must be chaos or typed, got %q", c.schema)
 	}
 	return nil
 }
