@@ -40,8 +40,8 @@ func TestCorpus(t *testing.T) {
 }
 
 func TestCorpusIgnoresWorkers(t *testing.T) {
-	a := sha256.Sum256(gen(t, "-corpus", "-size", "5MB", "-workers", "1"))
-	if b := sha256.Sum256(gen(t, "-corpus", "-size", "5MB", "-workers", "8")); a != b {
+	a := sha256.Sum256(gen(t, "-corpus", "-size", "2MB", "-workers", "1"))
+	if b := sha256.Sum256(gen(t, "-corpus", "-size", "2MB", "-workers", "8")); a != b {
 		t.Fatal("-workers changed the corpus")
 	}
 }

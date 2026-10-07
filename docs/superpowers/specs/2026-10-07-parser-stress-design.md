@@ -178,8 +178,8 @@ Verdicts follow RFC 8259 in the JSONTestSuite convention:
    - SHA-256 identical for workers 1, 4, 16.
 3. **Capped shapes:** every record valid; each `v` within ±5% of `-cap`.
 4. **Corpus** at ~5 MB: every line decodes; every `y` passes and every `n`
-   fails the reference check; every catalogue category appears; identical for
-   workers 1 and 8.
+   fails the reference check; every catalogue category appears. Identical for
+   workers 1 and 8 at ~2 MB (about 8 chunks, enough to reorder across workers).
 5. **CLI:** each new rejection.
 
 Manual (probing parsers; findings are reported, not fixed):

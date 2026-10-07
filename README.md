@@ -77,11 +77,12 @@ with shapes other than `wide-object` and `wide-array`.
 
 ## Determinism
 
-The same flags produce byte-identical output, whatever `-workers` is. A smaller
-`-size` gives a prefix of a larger one for records, capped shapes and the
-corpus; a giant shape's value is closed differently for each size. The
-guarantee holds per Go toolchain, because `math/rand/v2` may change between releases. To reproduce an old file,
-build with `GOTOOLCHAIN=go1.27.1`.
+The same flags produce byte-identical output, whatever `-workers` is. With
+`-ndjson` (records or capped shapes) and with `-corpus`, a smaller `-size` gives
+a prefix of a larger one. Array output matches up to its closing `]`, and a
+giant shape's value is closed differently for each size. The guarantee holds
+per Go toolchain, because `math/rand/v2` may change between releases; to
+reproduce an old file, build with `GOTOOLCHAIN=go1.27.1`.
 
 ## Performance
 
