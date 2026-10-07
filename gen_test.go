@@ -2,7 +2,10 @@ package main
 
 import (
 	"bytes"
+	"crypto/sha256"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"strconv"
 	"strings"
 	"testing"
@@ -134,5 +137,101 @@ func TestChunksDiffer(t *testing.T) {
 	}
 	if a != strip(b.chunk(nil, 0)) {
 		t.Fatal("rebuilding chunk 0 gave different content")
+	}
+}
+
+func gen(t *testing.T, args ...string) []byte {
+	t.Helper()
+	var out bytes.Buffer
+	if _, _, err := run(&out, cfgFor(t, args...)); err != nil {
+		t.Fatalf("run(%q): %v", args, err)
+	}
+	return out.Bytes()
+}
+
+func checkIDs(t *testing.T, recs []map[string]any) {
+	t.Helper()
+	if len(recs) == 0 {
+		t.Fatal("no records")
+	}
+	for i, r := range recs {
+		if r["id"] != json.Number(strconv.Itoa(i)) {
+			t.Fatalf("record %d has id %v", i, r["id"])
+		}
+	}
+}
+
+func TestValidOutput(t *testing.T) {
+	for _, schema := range []string{"chaos"} {
+		for _, ndjson := range []bool{false, true} {
+			t.Run(fmt.Sprintf("%s/ndjson=%v", schema, ndjson), func(t *testing.T) {
+				out := gen(t, "-size", "5MB", "-schema", schema, "-ndjson="+strconv.FormatBool(ndjson), "-chunk", "64")
+				if len(out) < 5e6 {
+					t.Fatalf("output %d bytes, want >= 5MB", len(out))
+				}
+				checkIDs(t, records(t, out, ndjson))
+			})
+		}
+	}
+}
+
+func TestDeterministicAcrossWorkers(t *testing.T) {
+	sum := func(args ...string) [32]byte {
+		return sha256.Sum256(gen(t, append([]string{"-size", "2MB", "-chunk", "16"}, args...)...))
+	}
+	base := sum("-workers", "1")
+	for _, w := range []string{"4", "16"} {
+		if sum("-workers", w) != base {
+			t.Errorf("-workers %s changed the output", w)
+		}
+	}
+	if sum("-workers", "4", "-seed", "7") == base {
+		t.Error("-seed did not change the output")
+	}
+}
+
+// ---- Review Focus edge cases ----
+
+func TestTinySizeStillValid(t *testing.T) {
+	for _, ndjson := range []bool{false, true} {
+		out := gen(t, "-size", "1B", "-chunk", "3", "-ndjson="+strconv.FormatBool(ndjson))
+		recs := records(t, out, ndjson)
+		checkIDs(t, recs)
+		if len(recs) != 3 {
+			t.Errorf("ndjson=%v: got %d records, want one chunk of 3", ndjson, len(recs))
+		}
+	}
+}
+
+func TestManyWorkersTinyOutput(t *testing.T) {
+	a := gen(t, "-size", "10KB", "-workers", "64", "-chunk", "1")
+	b := gen(t, "-size", "10KB", "-workers", "1", "-chunk", "1")
+	if !bytes.Equal(a, b) {
+		t.Fatal("64 workers and 1 worker differ")
+	}
+	checkIDs(t, records(t, a, false))
+}
+
+type failWriter struct{ left int }
+
+func (w *failWriter) Write(p []byte) (int, error) {
+	if len(p) > w.left {
+		n := w.left
+		w.left = 0
+		return n, errors.New("disk full")
+	}
+	w.left -= len(p)
+	return len(p), nil
+}
+
+func TestWriteErrorStops(t *testing.T) {
+	for _, left := range []int{0, 1 << 20} {
+		_, written, err := run(&failWriter{left: left}, cfgFor(t, "-size", "50GB", "-workers", "8", "-chunk", "16"))
+		if err == nil || err.Error() != "disk full" {
+			t.Fatalf("left=%d: err = %v, want disk full", left, err)
+		}
+		if written != int64(left) {
+			t.Fatalf("left=%d: written = %d", left, written)
+		}
 	}
 }

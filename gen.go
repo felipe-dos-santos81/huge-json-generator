@@ -19,6 +19,9 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
 )
 
 type config struct {
@@ -92,9 +95,108 @@ func parseConfig(args []string) (config, error) {
 	}, nil
 }
 
+type chunkOut struct {
+	idx int64
+	buf *[]byte
+}
+
+// run writes the payload to w and reports how many records and bytes it wrote.
+// Workers build chunks concurrently; at most 2*workers chunks are in flight and
+// w receives them strictly in index order.
+func run(w io.Writer, cfg config) (records, written int64, err error) {
+	done := make(chan struct{})
+	defer close(done) // releases workers on every return path
+
+	tokens := make(chan struct{}, 2*cfg.workers)
+	for range cap(tokens) {
+		tokens <- struct{}{}
+	}
+	results := make(chan chunkOut)
+	var next atomic.Int64
+	pool := sync.Pool{New: func() any { b := make([]byte, 0, 1<<20); return &b }}
+
+	for range cfg.workers {
+		go func() {
+			b := newBuilder(cfg)
+			for {
+				select {
+				case <-tokens:
+				case <-done:
+					return
+				}
+				i := next.Add(1) - 1
+				bp := pool.Get().(*[]byte)
+				*bp = b.chunk((*bp)[:0], i)
+				select {
+				case results <- chunkOut{i, bp}:
+				case <-done:
+					return
+				}
+			}
+		}()
+	}
+
+	write := func(p []byte) error {
+		n, err := w.Write(p)
+		written += int64(n)
+		return err
+	}
+	if !cfg.ndjson {
+		if err = write([]byte("[\n")); err != nil {
+			return
+		}
+	}
+
+	start := time.Now()
+	nextReport := int64(1e9)
+	pending := map[int64]*[]byte{}
+	for idx := int64(0); idx == 0 || written < cfg.target; idx++ {
+		bp, ok := pending[idx]
+		for !ok {
+			c := <-results
+			if c.idx == idx {
+				bp, ok = c.buf, true
+			} else {
+				pending[c.idx] = c.buf
+			}
+		}
+		delete(pending, idx)
+		err = write(*bp)
+		pool.Put(bp)
+		tokens <- struct{}{}
+		if err != nil {
+			return
+		}
+		records += int64(cfg.chunk)
+
+		if cfg.progress != nil && written >= nextReport {
+			el := time.Since(start).Seconds()
+			fmt.Fprintf(cfg.progress, "\r%.1f / %.1f GB  %.0f MB/s",
+				float64(written)/1e9, float64(cfg.target)/1e9, float64(written)/1e6/el)
+			for nextReport <= written {
+				nextReport += 1e9
+			}
+		}
+	}
+	if !cfg.ndjson {
+		err = write([]byte("\n]\n"))
+	}
+	return
+}
+
 func main() {
-	if _, err := parseConfig(os.Args[1:]); err != nil {
+	cfg, err := parseConfig(os.Args[1:])
+	if err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(2)
 	}
+	cfg.progress = os.Stderr
+	start := time.Now()
+	records, written, err := run(os.Stdout, cfg)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "\nwrite:", err)
+		os.Exit(1)
+	}
+	fmt.Fprintf(os.Stderr, "\rdone: %d records, %d bytes in %s\n",
+		records, written, time.Since(start).Round(time.Millisecond))
 }
