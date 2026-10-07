@@ -7,8 +7,10 @@ do not add dependencies.
 
 | File | Responsibility |
 |---|---|
-| `gen.go` | `config`, flag parsing and validation (`parseSize`, `parseConfig`), the ordered parallel pipeline (`run`), `main` |
-| `value.go` | Per-worker `builder`: `chunk()` framing, chaos generator (`value`, `fields`, `record`), typed generator (`typedField`, `typedRecord`, `t*` helpers) |
+| `gen.go` | `config` and `schema`, flags (`flags`, `usage`, `parseConfig`, `validate`), the ordered parallel pipeline (`startWorkers`, `run`), `main` |
+| `value.go` | Per-worker `builder`: `chunk()` framing, `record`/`someFields` key selection, `strN` escaping, shared alphabets |
+| `chaos.go` | `chaosValue`: any key may hold any type |
+| `typed.go` | `fields` table (every key, in order, with its typed generator) and the `typed*` helpers |
 | `gen_test.go` | All tests, stdlib `testing` only |
 | `docs/superpowers/specs/` | Design spec: the authority on behaviour |
 | `docs/superpowers/plans/` | Implementation plan (historical) |
@@ -32,9 +34,11 @@ make bench      # throughput check after touching value generation
   2; write errors exit 1.
 - **Typed mode keeps one JSON type per key path (plus `null`).** Integers stay
   within ±(2^53−1), and floats print fixed-point with a decimal point and below
-  their max (`tFixed` draws integers for this reason). Adding a key means adding
-  it to both `keys` and `typedField`.
-- **`-depth` is capped at 10,** because chaos memory grows about 1.4× per level.
+  their limit (`typedFixed` draws integers for this reason). Adding a key is one
+  entry in the `fields` table, which both schemas use.
+- **`-depth` is capped at 10** (`maxDepth`), because chaos memory grows about 1.4× per level.
+- **Refactors must not change output bytes.** Compare `shasum` of a fixed-seed
+  run before and after, for both schemas and both output forms.
 
 ## Gotchas
 

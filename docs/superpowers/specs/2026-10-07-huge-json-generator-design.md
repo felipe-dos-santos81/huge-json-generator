@@ -1,6 +1,6 @@
 # jsongen — huge random JSON generator: design
 
-Date: 2026-10-07 · Status: approved in chat, pending written-spec review
+Date: 2026-10-07 · Status: implemented; updated after code review (see "Verified")
 
 ## Goal
 
@@ -38,9 +38,13 @@ go.mod        module jsongen; go 1.27.1. go.mod cannot stop a newer local
               toolchain from being used, so byte-identical output is promised
               per toolchain only (rand/v2 method outputs may change between
               releases); reproduce old files with GOTOOLCHAIN=go1.27.1
-gen.go        main, flags/config, run(), chunk pipeline, writer
-value.go      chaos + typed value generators, string escaping
+gen.go        main, flags/config/validation, run(), chunk pipeline, writer
+value.go      builder: chunk framing, record/field selection, string escaping
+chaos.go      chaos value generator
+typed.go      typed field table (key → generator) and typed helpers
 gen_test.go   stdlib-only tests (see Testing)
+Makefile      build / generate / bench / test / check targets (`make help`)
+README.md     user docs; AGENTS.md: notes for coding agents
 ```
 
 ## CLI
@@ -52,13 +56,18 @@ gen_test.go   stdlib-only tests (see Testing)
 | `-seed` | 42 | RNG seed |
 | `-null` | 0.10 | probability a value is `null` |
 | `-empty` | 0.10 | probability a value is empty (`""`, `[]`, `{}`); `-null + -empty ≤ 1` |
-| `-depth` | 4 | max nesting depth (chaos: any value; typed: `payload` recursion) |
+| `-depth` | 4 | max nesting depth, 0–10 (chaos: any value; typed: `payload` recursion). Capped because chaos output grows ≈1.4× per level (depth 12 peaked near 2 GB RSS) |
 | `-schema` | `chaos` | `chaos` \| `typed` |
 | `-workers` | `runtime.NumCPU()` | generator goroutines; ≥ 1; does not affect output |
 | `-chunk` | 1024 | records per chunk; ≥ 1; **part of the determinism key**. Measured: throughput flat from 128 to 4096; at 1024 a chunk is ≈ 2.3 MB (chaos) / ≈ 0.4 MB (typed) |
 
-stdout carries only JSON. stderr: progress line every 1 GB written
-(`X / Y GB  Z MB/s`) and a final `done: <records> records, <bytes> bytes in <dur>`.
+stdout carries only JSON. stderr: one newline-terminated progress line per
+1 GB written (`X / Y GB  Z MB/s`, average rate) and a final
+`done: <records> records, <bytes> bytes in <dur>`. `-h` prints a synopsis,
+three usage examples and the flag defaults, and exits 0.
+
+The size check counts every byte written, including the array framing, so the
+output is ≥ target.
 
 Array form: `[\n` + records joined by `,\n` + `\n]\n`. NDJSON: each record + `\n`.
 
@@ -81,26 +90,28 @@ claim idx ──► worker × N ──(idx, buf)──► writer: reorder ──
   uncorrelated output (DXSM output permutation), and distinct 128-bit start
   states never overlap in practice.
 - **Workers.** Loop: acquire a token from a buffered channel of capacity 2N
-  (select on `done`), claim `i = next.Add(1) − 1`, build the chunk into a
+  (select on `stop`), claim `i = next.Add(1) − 1`, build the chunk into a
   buffer from a `sync.Pool`, send `(i, buf)` on the results channel (select on
-  `done`).
+  `stop`).
 - **Writer.** Holds a `map[int64][]byte` of early arrivals; whenever chunk
   `next` is present, writes it straight to `os.Stdout` (no `bufio` — chunks are
   already large), adds to `written`, returns the buffer to the pool, releases a
   token, increments `next`. No deadlock: indices are claimed in increasing order
   under the token cap, so the awaited chunk is always held by a running worker.
-- **Stop.** When `written ≥ target` after a chunk, the writer closes `done`,
+- **Stop.** When `written ≥ target` after a chunk, the writer closes `stop`,
   writes the array trailer if needed, and returns. In-flight chunks are
   discarded. Stopping at a chunk boundary is what makes output independent of N.
-- **Per-chunk builder.** The draft's `gen` struct (rng, buf, pNull, pEmpty,
-  maxDepth) becomes the per-chunk builder: new RNG per chunk, buffer reused.
+- **Per-worker builder.** The draft's `gen` struct becomes a `builder` that
+  holds the `config`, owned by one worker and reseeded per chunk; its buffer is
+  reused.
 
 ## Value generators
 
 ### Shared
 
 - Every record starts with `"id": <global id>`. Remaining keys follow the
-  draft's fixed order, each included with probability ⅔ (no duplicate keys).
+  fixed order of the `fields` table in `typed.go` (the single list of keys for
+  both schemas), each included with probability ⅔ (no duplicate keys).
 - Each value: `null` with probability `-null`; else empty with probability
   `-empty`; else a normal value.
 - `strN(alphabet, n)` — the draft's escaping (`\" \\ \n \t \r \b \f`, other
@@ -121,14 +132,14 @@ allowed); empty picks uniformly from `""`, `[]`, `{}`; scalars only at max depth
 |---|---|---|
 | `name` | string | 3–20 chars, ASCII + accented Latin |
 | `email` | string | `word@word.com` |
-| `score` | float | [0, 100), fixed-point (no exponent) |
+| `score` | float | [0, 100), exactly 4 decimal places (no exponent) |
 | `active` | bool | |
 | `tags` | string[] | 0–5 short strings |
 | `meta` | object | `{source: string, version: int, flags: bool[]}` |
 | `note` | string | usually short; 1 in 50 is 200–2200 chars; full UTF-8 incl. 4-byte; `\" \\ \n \t` escapes |
-| `price` | float | 2 decimal places |
+| `price` | float | [0, 1000), exactly 2 decimal places |
 | `created_at` | string | RFC 3339 timestamp |
-| `payload` | object | `{k: string, n: int, child: payload}`, recursion stops at `-depth` (child omitted) |
+| `payload` | object | `{k: string, n: int, child: payload}`, recursion stops at `-depth` (child omitted; at `-depth 0` or `1`, `payload` is `{k, n}`) |
 | `items` | object[] | 0–5 × `{sku: string, qty: int, price: float}` |
 | `owner` | object | `{name: string, email: string}` |
 | `ref` | string | 32 lowercase hex chars |
@@ -140,16 +151,21 @@ allowed); empty picks uniformly from `""`, `[]`, `{}`; scalars only at max depth
 - Empty is type-appropriate: `""` / `[]` / `{}`. Numbers and bools have no
   empty form — an empty roll yields a normal value (effective empty rate 0 for
   those; stated in `-empty` help text).
-- Typed string alphabet excludes `\b`, `\f`, `\u0001`, `\u001f`; keeps `"`,
+- Typed string alphabet excludes `\r`, `\b`, `\f`, `\u0001`, `\u001f`; keeps `"`,
   `\`, `\n`, `\t`, multi-byte UTF-8.
+- Floats are drawn as integers and printed with a fixed number of decimals, so
+  they never round up to their limit and always carry a decimal point.
 - Known caveat: `{}` for an object-typed field is valid and type-consistent,
   but strict Avro/Parquet converters may reject it; use `-empty 0` there.
 
 ## Errors
 
-- Invalid flags (`-size` unparsable or ≤ 0, `-null`/`-empty` < 0 or sum > 1,
-  `-depth` < 0, `-workers` < 1, `-chunk` < 1, unknown `-schema`): one-line
-  stderr message, exit 2.
+- Invalid flags exit 2 with a one-line stderr message (`<reason> (see -h)`):
+  malformed or unknown flags (`-workers abc`, `-bogus`); `-size` unparsable,
+  ≤ 0 or ≥ 2^63 (including `Inf`/`NaN`); `-null`/`-empty` < 0, NaN, or summing
+  > 1; `-depth` outside 0–10; `-workers` < 1; `-chunk` < 1; unknown `-schema`;
+  any positional argument (Go's flag parser stops at the first one, so
+  `-ndjson true -size 1KB` would otherwise drop `-size` and run 50 GB).
 - Write error (e.g. `ENOSPC`): `write: <err>` on stderr, exit 1. Partial output
   is left as-is (stdout may not be a file).
 - Consumer closes the pipe: Go's default `SIGPIPE` on fd 1 terminates the
@@ -182,3 +198,11 @@ Manual, before declaring done:
   independent parser).
 - One full 50 GB run to disk: record time and final size; delete afterwards
   unless asked to keep (≈ 157 GB free on the volume).
+
+## Verified (2026-10-07, 14 cores, Go 1.27.1)
+
+- 5 GB to `/dev/null`: chaos 0.21 GB/s (1 worker) / 1.77 GB/s (14); typed
+  0.35 / 3.0 GB/s. Same byte count for 1 and 14 workers.
+- `jq` accepts typed NDJSON and chaos array output (200 MB each).
+- `jsongen | head -c 100` exits with SIGPIPE status 141, no stderr output.
+- 50 GB chaos run: 52.9 s, 50 001 669 820 bytes, ends with `}\n]\n`.
