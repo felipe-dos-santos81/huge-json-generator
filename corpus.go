@@ -24,7 +24,15 @@ type corpusCase struct {
 
 var catalogue = []corpusCase{
 	// y: must accept
-	{'y', "top_level_value", func(c *corpusSource, doc []byte) []byte { return c.with(doc, func() { c.chaosValue(math.MaxInt) }) }},
+	{'y', "top_level_value", func(c *corpusSource, doc []byte) []byte {
+		start := len(doc)
+		for {
+			doc = c.with(doc[:start], func() { c.chaosValue(math.MaxInt) })
+			if doc[start] != '[' && doc[start] != '{' {
+				return doc // a scalar: string, number, bool or null
+			}
+		}
+	}},
 	{'y', "whitespace", (*corpusSource).whitespace},
 	{'y', "escapes", (*corpusSource).validEscapes},
 	{'y', "numbers", func(c *corpusSource, doc []byte) []byte { return c.list(doc, validNumbers) }},
@@ -33,7 +41,14 @@ var catalogue = []corpusCase{
 	{'y', "record", (*corpusSource).valid},
 
 	// n: must reject. Most mutate a valid record, so the defect sits in realistic content.
-	{'n', "trailing_comma", func(c *corpusSource, doc []byte) []byte { return c.atStructural(doc, "]}", insert(0, ",")) }},
+	{'n', "trailing_comma", func(c *corpusSource, doc []byte) []byte {
+		return c.atStructural(doc, "]}", func(d []byte, p int) []byte {
+			if d[p-1] == '[' || d[p-1] == '{' {
+				return d // empty container: a comma here is a lone comma, not a trailing one
+			}
+			return slices.Insert(d, p, ',')
+		})
+	}},
 	{'n', "leading_comma", func(c *corpusSource, doc []byte) []byte { return c.atStructural(doc, "[{", insert(1, ",")) }},
 	{'n', "missing_comma", func(c *corpusSource, doc []byte) []byte { return c.atStructural(doc, ",", remove) }},
 	{'n', "missing_colon", func(c *corpusSource, doc []byte) []byte { return c.atStructural(doc, ":", remove) }},
@@ -297,9 +312,10 @@ func (c *corpusSource) insideString(doc []byte, s string) []byte {
 
 // scan returns the offsets of structural bytes ({}[],: and string-opening
 // quotes) and of insertion points strictly inside strings: rune starts that
-// do not split an escape sequence.
+// do not split an escape sequence, including the four hex digits of a
+// unicode escape.
 func scan(doc []byte) (structural, inside []int) {
-	inString, escaped := false, false
+	inString, escaped, hexLeft := false, false, 0
 	for p, ch := range doc {
 		switch {
 		case !inString:
@@ -307,8 +323,13 @@ func scan(doc []byte) (structural, inside []int) {
 				structural = append(structural, p)
 			}
 			inString = ch == '"'
+		case hexLeft > 0:
+			hexLeft--
 		case escaped:
 			escaped = false
+			if ch == 'u' {
+				hexLeft = 4
+			}
 		case ch == '\\':
 			escaped = true
 			inside = append(inside, p)

@@ -5,6 +5,8 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"slices"
+	"strings"
 	"testing"
 )
 
@@ -73,4 +75,73 @@ func TestCorpusExtremeRates(t *testing.T) {
 			}
 		}
 	}
+}
+
+// scan must not offer insertion points inside a unicode escape's hex digits.
+func TestScanSkipsUnicodeEscapeDigits(t *testing.T) {
+	doc := []byte(`["a\` + "u0041" + `b"]`) // ["a<backslash>u0041b"]
+	_, inside := scan(doc)
+	if want := []int{2, 3, 9, 10}; !slices.Equal(inside, want) {
+		t.Fatalf("inside = %v, want %v", inside, want)
+	}
+}
+
+// Each category's document must carry the defect its name promises.
+func TestCorpusCategoriesHoldTheirDefect(t *testing.T) {
+	out := gen(t, "-corpus", "-size", "3MB")
+	for _, line := range bytes.Split(bytes.TrimSuffix(out, []byte("\n")), []byte("\n")) {
+		var c struct {
+			Category string
+			DocB64   string `json:"doc_b64"`
+		}
+		if err := json.Unmarshal(line, &c); err != nil {
+			t.Fatal(err)
+		}
+		doc, _ := base64.StdEncoding.DecodeString(c.DocB64)
+		switch c.Category {
+		case "trailing_comma":
+			if bytes.Contains(doc, []byte("[,]")) || bytes.Contains(doc, []byte("{,}")) {
+				t.Fatalf("trailing_comma holds a lone comma: %.80q", doc)
+			}
+		case "top_level_value":
+			if doc[0] == '[' || doc[0] == '{' {
+				t.Fatalf("top_level_value is not a scalar: %.80q", doc)
+			}
+		case "invalid_utf8", "raw_control":
+			if brokenUnicodeEscape(doc) {
+				t.Fatalf("%s broke a unicode escape: %.80q", c.Category, doc)
+			}
+		}
+	}
+}
+
+// brokenUnicodeEscape reports whether a string in doc holds a unicode
+// escape (backslash, u) whose four hex digits were interrupted.
+func brokenUnicodeEscape(doc []byte) bool {
+	inString, escaped := false, false
+	for i, ch := range doc {
+		switch {
+		case !inString:
+			inString = ch == '"'
+		case escaped:
+			escaped = false
+			if ch == 'u' && (i+5 > len(doc) || !isHex(doc[i+1:i+5])) {
+				return true
+			}
+		case ch == '\\':
+			escaped = true
+		case ch == '"':
+			inString = false
+		}
+	}
+	return false
+}
+
+func isHex(b []byte) bool {
+	for _, ch := range b {
+		if !strings.ContainsRune("0123456789abcdefABCDEF", rune(ch)) {
+			return false
+		}
+	}
+	return true
 }
