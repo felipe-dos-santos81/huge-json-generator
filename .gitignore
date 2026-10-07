@@ -1,0 +1,17 @@
+# Build output and generated payloads
+/bin/
+/out/
+/jsongen
+/*.json
+/*.ndjson
+
+# Go test and profiling artifacts
+*.test
+*.prof
+*.out
+
+# Agent and tool scratch
+/.claude/
+/.superpowers/
+
+.DS_Store
