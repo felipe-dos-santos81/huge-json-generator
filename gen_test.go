@@ -304,6 +304,18 @@ func TestTypedFloatsFixedPoint(t *testing.T) {
 			if n, ok := r[k].(json.Number); ok && (!strings.Contains(string(n), ".") || strings.ContainsAny(string(n), "eE")) {
 				t.Fatalf("%s = %s, want fixed-point with a decimal point", k, n)
 			}
+			if n, ok := r[k].(json.Number); ok {
+				v, err := strconv.ParseFloat(string(n), 64)
+				if err != nil {
+					t.Fatalf("%s = %s: %v", k, n, err)
+				}
+				if k == "score" && (v < 0 || v >= 100) {
+					t.Fatalf("score = %.4f, want [0, 100)", v)
+				}
+				if k == "price" && (v < 0 || v >= 1000) {
+					t.Fatalf("price = %.2f, want [0, 1000)", v)
+				}
+			}
 		}
 	}
 }
@@ -388,5 +400,25 @@ func TestTypedAllEmpty(t *testing.T) {
 				t.Fatalf("-empty 1 -null 0: %s is null", k)
 			}
 		}
+	}
+}
+
+// tFixed must stay below max and keep its decimals, even for the largest draw.
+func TestFixedRange(t *testing.T) {
+	b := newBuilder(cfgFor(t, "-null", "0", "-empty", "0"))
+	b.pcg.Seed(1, 2)
+	seen := map[string]bool{}
+	for range 1000 {
+		b.buf = b.buf[:0]
+		b.tFixed(1, 1)
+		seen[string(b.buf)] = true
+	}
+	for d := range 10 {
+		if want := fmt.Sprintf("0.%d", d); !seen[want] {
+			t.Errorf("never produced %s", want)
+		}
+	}
+	if len(seen) != 10 {
+		t.Errorf("got %d distinct values, want exactly 0.0..0.9: %v", len(seen), seen)
 	}
 }

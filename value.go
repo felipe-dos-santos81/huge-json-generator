@@ -265,10 +265,22 @@ func (b *builder) tInt(n int) {
 	}
 }
 
-// tFloat always prints a decimal point, so loaders never infer an integer.
-func (b *builder) tFloat(scale float64, decimals int) {
-	if !b.special("") {
-		b.buf = strconv.AppendFloat(b.buf, b.r.Float64()*scale, 'f', decimals, 64)
+// tFixed writes a uniform value in [0, max) with exactly decimals (>= 1)
+// fractional digits. Drawing an integer avoids rounding up to max, and the
+// decimal point keeps loaders from inferring an integer.
+func (b *builder) tFixed(max, decimals int) {
+	if b.special("") {
+		return
+	}
+	unit := 1
+	for range decimals {
+		unit *= 10
+	}
+	n := b.r.IntN(max * unit)
+	b.buf = strconv.AppendInt(b.buf, int64(n/unit), 10)
+	b.buf = append(b.buf, '.')
+	for d := unit / 10; d > 0; d /= 10 {
+		b.buf = append(b.buf, byte('0'+n%unit/d%10))
 	}
 }
 
@@ -336,7 +348,7 @@ func (b *builder) typedField(k string) {
 	case "email":
 		b.tEmail()
 	case "score":
-		b.tFloat(100, 4)
+		b.tFixed(100, 4)
 	case "active":
 		b.tBool()
 	case "tags":
@@ -368,7 +380,7 @@ func (b *builder) typedField(k string) {
 			b.strN(typedAlphabet, b.textLen())
 		}
 	case "price":
-		b.tFloat(1000, 2)
+		b.tFixed(1000, 2)
 	case "created_at":
 		b.tTime()
 	case "payload":
@@ -383,7 +395,7 @@ func (b *builder) typedField(k string) {
 					b.comma("qty")
 					b.tInt(100)
 					b.comma("price")
-					b.tFloat(1000, 2)
+					b.tFixed(1000, 2)
 					b.end('}')
 				}
 			}
