@@ -127,6 +127,53 @@ func mirror(dst, run []byte) []byte {
 	return dst
 }
 
+// maxCap bounds -cap: capped chunks hold at least one value, so memory is
+// about 2 x workers x cap.
+const maxCap = 256e6
+
+// cappedSource writes records {"id":N,"v":<value of about -cap bytes>}, each
+// value built whole inside its record.
+type cappedSource struct{ *shapeSource }
+
+func (c cappedSource) header() []byte         { return c.builder.header() }
+func (c cappedSource) trailer() []byte        { return c.builder.trailer() }
+func (c cappedSource) tailLen([]byte) int64   { return 0 }
+func (c cappedSource) perChunk() int64        { return min(1024, max(1, (1<<20)/c.cfg.cap)) }
+func (c cappedSource) summary(n int64) string { return fmt.Sprintf("%d records", n*c.perChunk()) }
+
+func (c cappedSource) chunk(dst []byte, i int64) []byte {
+	c.pcg.Seed(c.cfg.seed, uint64(i))
+	return c.records(dst, i, c.perChunk(), c.cappedRecord)
+}
+
+// cappedRecord appends units until the value, counting the closers deep
+// still needs, reaches the cap.
+func (c cappedSource) cappedRecord(id int64) {
+	c.buf = append(c.buf, `{"id":`...)
+	c.buf = strconv.AppendInt(c.buf, id, 10)
+	c.buf = append(c.buf, `,"v":`...)
+	c.buf = append(c.buf, c.def.open...)
+	start := len(c.buf)
+	budget := c.cfg.cap - int64(len(c.def.open)+len(c.def.close))
+	for idx := int64(0); ; idx++ {
+		size := int64(len(c.buf) - start)
+		if c.kind == deep {
+			size += idx + 1 // a closer per opener, plus the leaf
+		}
+		if size >= budget {
+			break
+		}
+		c.def.unit(c.shapeSource, idx)
+	}
+	if c.kind == deep {
+		run := c.buf[start:]
+		c.buf = append(c.buf, '0')
+		c.buf = mirror(c.buf, run)
+	}
+	c.buf = append(c.buf, c.def.close...)
+	c.buf = append(c.buf, '}')
+}
+
 func (s *shapeSource) opener(int64) {
 	if s.r.IntN(2) == 0 {
 		s.buf = append(s.buf, '[')

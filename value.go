@@ -43,13 +43,19 @@ func newBuilder(cfg config) *builder {
 // mode. The result depends only on the config and i.
 func (b *builder) chunk(dst []byte, i int64) []byte {
 	b.pcg.Seed(b.cfg.seed, uint64(i))
+	return b.records(dst, i, int64(b.cfg.chunk), b.record)
+}
+
+// records appends records [i*n, (i+1)*n) to dst, framed for the output mode:
+// ",\n" before every record but the first in an array, "\n" after each in
+// NDJSON. rec writes the record with the given id.
+func (b *builder) records(dst []byte, i, n int64, rec func(id int64)) []byte {
 	b.buf = dst
-	n := int64(b.cfg.chunk)
 	for id := i * n; id < (i+1)*n; id++ {
 		if id > 0 && !b.cfg.ndjson {
 			b.buf = append(b.buf, ',', '\n')
 		}
-		b.record(id)
+		rec(id)
 		if b.cfg.ndjson {
 			b.buf = append(b.buf, '\n')
 		}

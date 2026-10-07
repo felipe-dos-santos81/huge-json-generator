@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"math/big"
 	"strconv"
 	"testing"
 )
@@ -122,5 +123,53 @@ func TestTailWriteErrorStops(t *testing.T) {
 	_, written, err := run(&failWriter{left: inTail}, cfgFor(t, "-shape", "deep", "-size", "3MB", "-workers", "4"))
 	if err == nil || err.Error() != "disk full" || written != int64(inTail) {
 		t.Fatalf("err = %v, written = %d; want disk full after %d bytes", err, written, inTail)
+	}
+}
+
+func TestCappedShapes(t *testing.T) {
+	for _, c := range []struct{ shape, cap string }{
+		{"deep", "20KB"}, // ~5,000 levels, inside encoding/json's 10,000 limit
+		{"wide-object", "200KB"}, {"wide-array", "200KB"},
+		{"longstring", "200KB"}, {"escapes", "200KB"}, {"bignum", "200KB"},
+	} {
+		capBytes, _ := parseSize(c.cap)
+		out := gen(t, "-shape", c.shape, "-cap", c.cap, "-size", "2MB", "-ndjson")
+		for i, line := range bytes.Split(bytes.TrimSuffix(out, []byte("\n")), []byte("\n")) {
+			var rec struct {
+				ID int64
+				V  json.RawMessage
+			}
+			if !json.Valid(line) || json.Unmarshal(line, &rec) != nil || rec.ID != int64(i) {
+				t.Fatalf("%s: line %d invalid or id %d out of order", c.shape, i, rec.ID)
+			}
+			if d := float64(len(rec.V))/float64(capBytes) - 1; d < -0.05 || d > 0.05 {
+				t.Fatalf("%s: value %d bytes, want %s ± 5%%", c.shape, len(rec.V), c.cap)
+			}
+			if c.shape == "bignum" {
+				if _, ok := new(big.Float).SetString(string(rec.V)); !ok {
+					t.Fatalf("bignum: %.40s… does not parse as a number", rec.V)
+				}
+			}
+		}
+	}
+}
+
+func TestCappedArrayValid(t *testing.T) {
+	out := gen(t, "-shape", "wide-array", "-cap", "100KB", "-size", "1MB")
+	var recs []struct{ V []any }
+	if err := json.Unmarshal(out, &recs); err != nil || len(recs) < 10 {
+		t.Fatalf("got %d records, err %v; want >= 10 in a valid array", len(recs), err)
+	}
+}
+
+// A cap smaller than one unit still yields valid, minimal values.
+func TestCappedTinyCap(t *testing.T) {
+	for _, shape := range []string{"deep", "wide-object", "wide-array", "longstring", "escapes", "bignum"} {
+		out := gen(t, "-shape", shape, "-cap", "1B", "-size", "2KB", "-ndjson")
+		for _, line := range bytes.Split(bytes.TrimSuffix(out, []byte("\n")), []byte("\n")) {
+			if !json.Valid(line) {
+				t.Fatalf("%s -cap 1B: invalid record %q", shape, line)
+			}
+		}
 	}
 }

@@ -58,6 +58,7 @@ type config struct {
 	workers  int
 	chunk    int
 	shape    shapeKind // "": records
+	cap      int64     // with shape: bytes per capped value; 0: one giant value
 	progress io.Writer // nil: no progress output
 }
 
@@ -107,6 +108,14 @@ func flags(cfg *config) *flag.FlagSet {
 	fs.IntVar(&cfg.workers, "workers", runtime.NumCPU(), "generator goroutines; does not change output")
 	fs.IntVar(&cfg.chunk, "chunk", 1024, "records per chunk; changes output")
 	fs.TextVar(&cfg.shape, "shape", shapeKind(""), "write one giant value of this shape: "+shapeNames())
+	fs.Func("cap", "with -shape: write records each holding a value of about this size (at most 256MB)", func(s string) error {
+		v, err := parseSize(s)
+		if err != nil || v <= 0 || v > maxCap {
+			return errors.New("want a size from 1B to 256MB")
+		}
+		cfg.cap = v
+		return nil
+	})
 	return fs
 }
 
