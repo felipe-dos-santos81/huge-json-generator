@@ -59,6 +59,7 @@ type config struct {
 	chunk    int
 	shape    shapeKind // "": records
 	cap      int64     // with shape: bytes per capped value; 0: one giant value
+	corpus   bool      // labelled test cases instead of records
 	progress io.Writer // nil: no progress output
 }
 
@@ -116,6 +117,7 @@ func flags(cfg *config) *flag.FlagSet {
 		cfg.cap = v
 		return nil
 	})
+	fs.BoolVar(&cfg.corpus, "corpus", false, "write labelled y/n/i parser test cases as NDJSON (base64 documents)")
 	return fs
 }
 
