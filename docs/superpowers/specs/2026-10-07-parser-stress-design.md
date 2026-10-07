@@ -103,13 +103,13 @@ record's `v` is one value of about `-cap` bytes, built whole in its chunk).
 
 - `deep` tail: `tail(n, j)` regenerates body chunk `n−1−j` and mirrors it in
   reverse (`[` → `]`, `{"k":` → `}`); `tail(n, 0)` starts with the leaf `0`.
-  `tailLen(body)` = number of openers in the chunk (+1 for the leaf on the first
-  chunk). No opener sequence is ever stored.
+  `tailLen(body)` = number of openers in the chunk; the 1-byte leaf is extra, so
+  the output is still at least the target. No opener sequence is ever stored.
 - In `wide-*`, the comma before a member depends only on its global index > 0.
 - Giant strings and numbers are never `null`; `-null`/`-empty` affect only the
   small values inside `wide-*`.
 - Memory: giant chunks ≈ 1 MiB; capped chunks ≤ max(1 MiB, cap), so the worst
-  case is ≈ 2 × workers × 256 MB (documented in the README).
+  case is ≈ 3 × workers × 256 MB (documented in the README).
 
 ## Corpus
 

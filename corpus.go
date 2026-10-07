@@ -59,7 +59,19 @@ var catalogue = []corpusCase{
 	}},
 	{'n', "empty_document", func(c *corpusSource, doc []byte) []byte { return append(doc, c.pick([]string{"", " ", "\n\t "})...) }},
 	{'n', "single_quote", func(c *corpusSource, doc []byte) []byte {
-		return c.atStructural(doc, `"`, func(d []byte, p int) []byte { d[p] = '\''; return d })
+		return c.atStructural(doc, `"`, func(d []byte, p int) []byte {
+			// p opens a string: swap its closing quote too, so a lenient parser
+			// that accepts '...' sees a well-formed single-quoted string.
+			q := p + 1
+			for d[q] != '"' {
+				if d[q] == '\\' {
+					q++
+				}
+				q++
+			}
+			d[p], d[q] = '\'', '\''
+			return d
+		})
 	}},
 	{'n', "unquoted_key", func(c *corpusSource, doc []byte) []byte {
 		return c.with(append(doc, '{'), func() { c.letters(1 + c.r.IntN(8)); c.buf = append(c.buf, ':', '1', '}') })

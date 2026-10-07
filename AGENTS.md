@@ -7,14 +7,16 @@ do not add dependencies.
 
 | File | Responsibility |
 |---|---|
-| `gen.go` | `config` and `schema`, flags (`flags`, `usage`, `parseConfig`, `validate`), the ordered parallel pipeline (`startWorkers`, `run`), `main` |
+| `gen.go` | `config` and `schema`, flags (`flags`, `usage`, `parseConfig`, `validate`), the ordered parallel pipeline (`startWorkers`, `pipeline`, `run`), `main` |
 | `value.go` | Per-worker `builder`: `chunk()` framing, `record`/`someFields` key selection, `strN` escaping, shared alphabets |
 | `chaos.go` | `chaosValue`: any key may hold any type |
 | `typed.go` | `fields` table (every key, in order, with its typed generator) and the `typed*` helpers |
 | `source.go` | `source` interface (header, body chunks, optional tail, trailer) and the records source |
 | `shape.go` | `-shape`: giant values (`shapeSource`, `deep` mirrored tail) and capped records (`cappedSource`) |
 | `corpus.go` | `-corpus`: the y/n/i `catalogue`, mutations of valid records, the `acceptable` reference check |
-| `gen_test.go` | All tests, stdlib `testing` only |
+| `gen_test.go` | Records and CLI tests, stdlib `testing` only |
+| `shape_test.go` | `-shape` tests, including the `nesting` checker |
+| `corpus_test.go` | `-corpus` tests |
 | `docs/superpowers/specs/` | Design spec: the authority on behaviour |
 | `docs/superpowers/plans/` | Implementation plan (historical) |
 

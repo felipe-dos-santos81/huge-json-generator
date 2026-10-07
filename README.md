@@ -39,6 +39,9 @@ means the field's own empty form; numbers and booleans are never empty.
 | `-seed` | `42` | RNG seed |
 | `-workers` | CPU count | Generator goroutines; never changes the output |
 | `-chunk` | `1024` | Records per chunk; changes the output |
+| `-shape` | none | One giant value of that shape: `deep`, `wide-object`, `wide-array`, `longstring`, `escapes` or `bignum` |
+| `-cap` | none | With `-shape`, write records of values about this size instead, at most 256 MB |
+| `-corpus` | off | Write labelled y/n/i parser test cases as NDJSON |
 
 ## Parser stress
 
@@ -66,14 +69,16 @@ it is generated. Filter with `jq`, for example
 `jq -c 'select(.verdict=="n")'`, and decode `doc_b64` before feeding a parser.
 
 Giant values stream at 1–2 GB/s in under 100 MB of memory. Capped chunks hold at
-least one value, so memory grows to about 2 × workers × `-cap` (at most 256 MB
-per value). `-schema`, `-depth` and `-chunk` apply only to records.
+least one value, so memory grows to about 3 × workers × `-cap` (at most 256 MB
+per value). `-schema`, `-depth` and `-chunk` apply only to records and are
+rejected when given with `-shape` or `-corpus`.
 
 ## Determinism
 
 The same flags produce byte-identical output, whatever `-workers` is. A smaller
-`-size` gives a prefix of a larger one. The guarantee holds per Go toolchain,
-because `math/rand/v2` may change between releases. To reproduce an old file,
+`-size` gives a prefix of a larger one for records, capped shapes and the
+corpus; a giant shape's value is closed differently for each size. The
+guarantee holds per Go toolchain, because `math/rand/v2` may change between releases. To reproduce an old file,
 build with `GOTOOLCHAIN=go1.27.1`.
 
 ## Performance

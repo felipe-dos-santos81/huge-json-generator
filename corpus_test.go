@@ -103,6 +103,10 @@ func TestCorpusCategoriesHoldTheirDefect(t *testing.T) {
 			if bytes.Contains(doc, []byte("[,]")) || bytes.Contains(doc, []byte("{,}")) {
 				t.Fatalf("trailing_comma holds a lone comma: %.80q", doc)
 			}
+		case "single_quote":
+			if !singleQuoted(doc) {
+				t.Fatalf("single_quote holds no complete single-quoted string: %.80q", doc)
+			}
 		case "top_level_value":
 			if doc[0] == '[' || doc[0] == '{' {
 				t.Fatalf("top_level_value is not a scalar: %.80q", doc)
@@ -113,6 +117,26 @@ func TestCorpusCategoriesHoldTheirDefect(t *testing.T) {
 			}
 		}
 	}
+}
+
+// singleQuoted reports whether doc holds a pair of single quotes with no
+// unescaped double quote between them, i.e. a string delimited by '...'.
+func singleQuoted(doc []byte) bool {
+	open := bytes.IndexByte(doc, '\'')
+	if open < 0 {
+		return false
+	}
+	for i := open + 1; i < len(doc); i++ {
+		switch doc[i] {
+		case '\\':
+			i++
+		case '"':
+			return false
+		case '\'':
+			return true
+		}
+	}
+	return false
 }
 
 // brokenUnicodeEscape reports whether a string in doc holds a unicode

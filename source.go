@@ -5,6 +5,9 @@ import "fmt"
 // source produces the output in pieces the pipeline can build in parallel.
 // Each worker owns its own source; chunk and tail must be pure functions of
 // the config and their indices so the output never depends on -workers.
+// chunk and tail may be called for indices past where run stops (workers build
+// ahead, and pass 2 can call tail(n, j) with j >= n); those results are
+// discarded, so implementations must accept any index without panicking.
 type source interface {
 	header() []byte                     // written first
 	chunk(dst []byte, i int64) []byte   // body chunk i

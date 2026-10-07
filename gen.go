@@ -126,12 +126,12 @@ func usage(w io.Writer) {
 	fmt.Fprint(w, `Usage: jsongen [flags] > out.json
 Streams random JSON of the target size to stdout.
 
-  jsongen -size 50GB > big.json                      # one giant array
-  jsongen -size 50GB -ndjson > big.ndjson            # one object per line
-  jsongen -size 50GB -schema typed -ndjson | loader  # stable types per key
-  jsongen -shape deep -size 1GB | parser             # one giant extreme value
-  jsongen -shape escapes -cap 10MB -ndjson           # records of 10 MB extreme values
-  jsongen -corpus -size 100MB                        # labelled y/n/i parser test cases
+  jsongen -size 50GB > big.json                                      # one giant array
+  jsongen -size 50GB -ndjson > big.ndjson                            # one object per line
+  jsongen -size 50GB -schema typed -ndjson | loader                  # stable types per key
+  jsongen -shape deep -size 1GB | parser                             # one giant extreme value
+  jsongen -shape escapes -cap 10MB -size 1GB -ndjson > cases.ndjson  # records of 10 MB extreme values
+  jsongen -corpus -size 100MB                                        # labelled y/n/i parser test cases
 
 Flags:
 `)
