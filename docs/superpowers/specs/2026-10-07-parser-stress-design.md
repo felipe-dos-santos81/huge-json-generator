@@ -84,7 +84,7 @@ Sources:
 |---|---|---|---|---|
 | records | `[\n` / none | `-chunk` records (today's builder) | none | `\n]\n` / none |
 | giant shape | opening token | units `[i·U, (i+1)·U)` | `deep` only | closing token |
-| capped shape | `[\n` / none | `max(1, 1MiB / cap)` records | none | `\n]\n` / none |
+| capped shape | `[\n` / none | `max(1, 1MiB / cap)` records, at most 1024 | none | `\n]\n` / none |
 | corpus | none | 256 cases | none | none |
 
 ## Shapes
