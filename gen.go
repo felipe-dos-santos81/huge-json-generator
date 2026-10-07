@@ -15,6 +15,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"math"
 	"os"
 	"runtime"
 	"strconv"
@@ -52,7 +53,11 @@ func parseSize(s string) (int64, error) {
 			if err != nil {
 				return 0, err
 			}
-			return int64(f * float64(x.mult)), nil
+			v := f * float64(x.mult)
+			if !(v < math.MaxInt64) { // also rejects NaN and +Inf
+				return 0, fmt.Errorf("size %q out of range", s)
+			}
+			return int64(v), nil
 		}
 	}
 	return strconv.ParseInt(u, 10, 64)
@@ -67,20 +72,35 @@ func parseConfig(args []string) (config, error) {
 	seed := fs.Uint64("seed", 42, "RNG seed; same flags give identical output")
 	pNull := fs.Float64("null", 0.10, "probability a value is null")
 	pEmpty := fs.Float64("empty", 0.10, `probability a value is empty ("", [] or {}); typed numbers/bools are never empty`)
-	depth := fs.Int("depth", 4, "maximum nesting depth")
+	depth := fs.Int("depth", 4, "maximum nesting depth (0-10)")
 	schema := fs.String("schema", "chaos", "chaos (any type per key) or typed (one type per key)")
 	workers := fs.Int("workers", runtime.NumCPU(), "generator goroutines; does not change output")
 	chunk := fs.Int("chunk", 1024, "records per chunk; changes output")
+	fs.Usage = func() {
+		fmt.Fprint(fs.Output(), `Usage: jsongen [flags] > out.json
+Streams random JSON of the target size to stdout.
+
+  jsongen -size 50GB > big.json                      # one giant array
+  jsongen -size 50GB -ndjson > big.ndjson            # one object per line
+  jsongen -size 50GB -schema typed -ndjson | loader  # stable types per key
+
+Flags:
+`)
+		fs.PrintDefaults()
+	}
 	fs.Parse(args)
+	if fs.NArg() > 0 {
+		return config{}, fmt.Errorf("unexpected argument %q", fs.Arg(0))
+	}
 
 	target, err := parseSize(*sizeStr)
 	switch {
 	case err != nil || target <= 0:
 		return config{}, fmt.Errorf("bad -size %q", *sizeStr)
-	case *pNull < 0 || *pEmpty < 0 || *pNull+*pEmpty > 1:
+	case !(*pNull >= 0) || !(*pEmpty >= 0) || !(*pNull+*pEmpty <= 1): // NaN fails
 		return config{}, fmt.Errorf("-null and -empty must be >= 0 and sum to at most 1")
-	case *depth < 0:
-		return config{}, fmt.Errorf("-depth must be >= 0")
+	case *depth < 0 || *depth > 10:
+		return config{}, fmt.Errorf("-depth must be between 0 and 10")
 	case *workers < 1:
 		return config{}, fmt.Errorf("-workers must be >= 1")
 	case *chunk < 1:

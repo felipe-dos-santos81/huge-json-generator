@@ -33,7 +33,7 @@ func TestParseSize(t *testing.T) {
 			t.Errorf("parseSize(%q) = %d, %v; want %d", in, got, err, want)
 		}
 	}
-	for _, in := range []string{"abc", "GB", "1.5", ""} {
+	for _, in := range []string{"abc", "GB", "1.5", "", "InfGB", "1e30GB", "NaNGB"} {
 		if _, err := parseSize(in); err == nil {
 			t.Errorf("parseSize(%q) succeeded, want error", in)
 		}
@@ -54,10 +54,22 @@ func TestParseConfigRejects(t *testing.T) {
 		{"-null", "-0.1"}, {"-null", "0.6", "-empty", "0.5"},
 		{"-depth", "-1"}, {"-workers", "0"}, {"-chunk", "0"},
 		{"-schema", "strict"},
+		{"-depth", "11"}, {"-null", "NaN"}, {"-empty", "NaN"},
+		{"-ndjson", "true"}, {"10MB"},
 	} {
 		if _, err := parseConfig(args); err == nil {
 			t.Errorf("parseConfig(%q) succeeded, want error", args)
 		}
+	}
+}
+
+func TestParseConfigFlags(t *testing.T) {
+	cfg := cfgFor(t, "-size", "2MiB", "-ndjson", "-seed", "7", "-null", "0.3", "-empty", "0.2",
+		"-depth", "10", "-schema", "typed", "-workers", "3", "-chunk", "5")
+	want := config{target: 2 << 20, ndjson: true, seed: 7, pNull: 0.3, pEmpty: 0.2,
+		depth: 10, typed: true, workers: 3, chunk: 5}
+	if cfg != want {
+		t.Fatalf("got %+v, want %+v", cfg, want)
 	}
 }
 
