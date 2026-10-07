@@ -16,9 +16,11 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"maps"
 	"math"
 	"os"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -46,17 +48,6 @@ func (s *schema) UnmarshalText(text []byte) error {
 }
 
 const maxDepth = 10 // chaos output grows ~1.4x per nesting level
-
-// Flag names that validate checks by name, shared with their declarations.
-const (
-	flagNDJSON = "ndjson"
-	flagNull   = "null"
-	flagEmpty  = "empty"
-	flagDepth  = "depth"
-	flagSchema = "schema"
-	flagChunk  = "chunk"
-	flagCap    = "cap"
-)
 
 type config struct {
 	target   int64
@@ -111,16 +102,16 @@ func flags(cfg *config) *flag.FlagSet {
 		cfg.target = v
 		return nil
 	})
-	fs.BoolVar(&cfg.ndjson, flagNDJSON, false, "one object per line instead of a single array")
+	fs.BoolVar(&cfg.ndjson, "ndjson", false, "one object per line instead of a single array")
 	fs.Uint64Var(&cfg.seed, "seed", 42, "RNG seed; same flags give identical output")
-	fs.Float64Var(&cfg.pNull, flagNull, 0.10, "probability a value is null")
-	fs.Float64Var(&cfg.pEmpty, flagEmpty, 0.10, `probability a value is empty ("", [] or {}); typed numbers/bools are never empty`)
-	fs.IntVar(&cfg.depth, flagDepth, 4, fmt.Sprintf("maximum nesting depth (0-%d)", maxDepth))
-	fs.TextVar(&cfg.schema, flagSchema, chaos, "chaos (any type per key) or typed (one type per key)")
+	fs.Float64Var(&cfg.pNull, "null", 0.10, "probability a value is null")
+	fs.Float64Var(&cfg.pEmpty, "empty", 0.10, `probability a value is empty ("", [] or {}); typed numbers/bools are never empty`)
+	fs.IntVar(&cfg.depth, "depth", 4, fmt.Sprintf("maximum nesting depth (0-%d)", maxDepth))
+	fs.TextVar(&cfg.schema, "schema", chaos, "chaos (any type per key) or typed (one type per key)")
 	fs.IntVar(&cfg.workers, "workers", runtime.NumCPU(), "generator goroutines; does not change output")
-	fs.IntVar(&cfg.chunk, flagChunk, 1024, "records per chunk; changes output")
+	fs.IntVar(&cfg.chunk, "chunk", 1024, "records per chunk; changes output")
 	fs.TextVar(&cfg.shape, "shape", shapeKind(""), "write one giant value of this shape: "+shapeNames())
-	fs.Func(flagCap, "with -shape: write records each holding a value of about this size (at most 256MB)", func(s string) error {
+	fs.Func("cap", "with -shape: write records each holding a value of about this size (at most 256MB)", func(s string) error {
 		v, err := parseSize(s)
 		if err != nil || v <= 0 || v > maxCap {
 			return errors.New("want a size from 1B to 256MB")
@@ -168,25 +159,25 @@ func parseConfig(args []string) (config, error) {
 	if err := cfg.validate(set); err != nil {
 		return config{}, err
 	}
+	if cfg.corpus {
+		cfg.ndjson = true // the corpus is always NDJSON
+	}
 	return cfg, nil
 }
 
 // validate checks flag values; set names the flags given explicitly, so
 // flags that have no effect in the chosen mode are rejected, not ignored.
 func (c config) validate(set map[string]bool) error {
-	switch {
-	case c.shape != "" && c.corpus:
+	if c.shape != "" && c.corpus {
 		return errors.New("-shape and -corpus cannot be combined")
-	case set[flagCap] && c.shape == "":
-		return errors.New("-cap needs -shape")
-	case c.shape != "" && c.valueCap == 0 && c.ndjson:
-		return errors.New("-ndjson needs records, but a giant -shape is one document (add -cap)")
-	case c.corpus && set[flagNDJSON]:
-		return errors.New("-ndjson has no effect with -corpus, which always writes NDJSON")
-	case (c.shape != "" || c.corpus) && (set[flagSchema] || set[flagDepth] || set[flagChunk]):
-		return errors.New("-schema, -depth and -chunk only apply to records")
-	case c.shape != "" && !shapes[c.shape].smallValues && (set[flagNull] || set[flagEmpty]):
-		return errors.New("-null and -empty only affect records, the corpus, wide-object and wide-array")
+	}
+	mode, used := c.usedFlags()
+	for _, name := range slices.Sorted(maps.Keys(set)) {
+		if !slices.Contains(universalFlags, name) && !slices.Contains(used, name) {
+			return fmt.Errorf("-%s has no effect with %s", name, mode)
+		}
+	}
+	switch {
 	case !(c.pNull >= 0) || !(c.pEmpty >= 0) || !(c.pNull+c.pEmpty <= 1): // NaN fails
 		return errors.New("-null and -empty must be >= 0 and sum to at most 1")
 	case c.depth < 0 || c.depth > maxDepth:
@@ -197,6 +188,29 @@ func (c config) validate(set map[string]bool) error {
 		return errors.New("-chunk must be >= 1")
 	}
 	return nil
+}
+
+// universalFlags apply in every mode.
+var universalFlags = []string{"size", "seed", "workers"}
+
+// usedFlags names the configured mode and lists the flags it reads besides
+// universalFlags. validate rejects any other explicitly set flag, since it
+// would have no effect.
+func (c config) usedFlags() (mode string, used []string) {
+	switch {
+	case c.corpus:
+		return "-corpus", []string{"corpus", "null", "empty"}
+	case c.shape != "":
+		mode, used = "a giant -shape "+string(c.shape), []string{"shape"}
+		if c.valueCap > 0 {
+			mode, used = "-shape "+string(c.shape)+" -cap", append(used, "cap", "ndjson")
+		}
+		if shapes[c.shape].smallValues {
+			used = append(used, "null", "empty")
+		}
+		return mode, used
+	}
+	return "records", []string{"ndjson", "null", "empty", "depth", "schema", "chunk"}
 }
 
 // buildFunc builds chunk i of one pass into dst, using a worker's own source.
@@ -292,14 +306,14 @@ func run(w io.Writer, cfg config) (summary string, written int64, err error) {
 	if err = write(src.header()); err != nil {
 		return
 	}
-	t, hasTail := src.(tailer)
+	t, _ := src.(tailer)
 	var bodyChunks, pendingTail int64
 	err = pipeline(cfg, source.chunk, func(i int64, c []byte) (bool, error) {
 		bodyChunks = i + 1
 		if err := write(c); err != nil {
 			return false, err
 		}
-		if hasTail {
+		if t != nil {
 			pendingTail += t.tailLen(c)
 		}
 		return written+pendingTail < cfg.target, nil

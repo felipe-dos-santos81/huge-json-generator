@@ -128,15 +128,13 @@ func acceptable(doc []byte) bool { return json.Valid(doc) && utf8.Valid(doc) }
 // corpusSource writes NDJSON test cases {"id","verdict","category","doc_b64"}.
 type corpusSource struct {
 	*builder
-	doc []byte
+	doc []byte // the case under construction
+	tmp []byte // scratch record for generators that rebuild one
 }
 
-// newCorpus returns a corpus source. The corpus is always NDJSON, so the
-// builder's framing (header and trailer) is empty.
-func newCorpus(cfg config) *corpusSource {
-	cfg.ndjson = true
-	return &corpusSource{builder: newBuilder(cfg)}
-}
+// newCorpus returns a corpus source. parseConfig marks the corpus as NDJSON,
+// so the builder's framing (header and trailer) is empty.
+func newCorpus(cfg config) *corpusSource { return &corpusSource{builder: newBuilder(cfg)} }
 
 func (c *corpusSource) summary(n int64) string { return fmt.Sprintf("%d cases", n*casesPerChunk) }
 
@@ -234,27 +232,27 @@ func (c *corpusSource) empties(depth int) {
 
 // whitespace appends a valid record with a run of all four JSON whitespace
 // characters, in random order, on both sides of every structural token and
-// around the whole document.
+// around the whole document, in one forward pass.
 func (c *corpusSource) whitespace(doc []byte) []byte {
-	start := len(doc)
-	doc = c.valid(doc)
-	tokens := c.structuralIn(doc[start:], "{}[],:")
-	for k := len(tokens) - 1; k >= 0; k-- {
-		p := start + tokens[k]
-		doc = slices.Insert(doc, p+1, c.ws()...)
-		doc = slices.Insert(doc, p, c.ws()...)
+	c.tmp = c.valid(c.tmp[:0])
+	rec, prev := c.tmp, 0
+	doc = c.ws(doc)
+	for _, p := range c.structuralIn(rec, "{}[],:") {
+		doc = append(doc, rec[prev:p]...)
+		doc = c.ws(doc)
+		doc = append(doc, rec[p])
+		doc = c.ws(doc)
+		prev = p + 1
 	}
-	doc = slices.Insert(doc, start, c.ws()...)
-	return append(doc, c.ws()...)
+	doc = append(doc, rec[prev:]...)
+	return c.ws(doc)
 }
 
-// ws returns the four JSON whitespace characters in random order.
-func (c *corpusSource) ws() []byte {
-	w := make([]byte, 4)
-	for k, j := range c.r.Perm(4) {
-		w[k] = " \t\n\r"[j]
-	}
-	return w
+// ws appends the four JSON whitespace characters in random order.
+func (c *corpusSource) ws(dst []byte) []byte {
+	w := [4]byte{' ', '\t', '\n', '\r'}
+	c.r.Shuffle(len(w), func(i, j int) { w[i], w[j] = w[j], w[i] })
+	return append(dst, w[:]...)
 }
 
 // validEscapes appends strings of every escape kind, always including the
@@ -329,16 +327,11 @@ func (c *corpusSource) inString(doc []byte, s string, keep func(b byte) bool) []
 	start := len(doc)
 	doc = c.valid(doc)
 	_, inside := scan(doc[start:])
-	var at []int
-	for _, p := range inside {
-		if keep(doc[start+p]) {
-			at = append(at, start+p)
-		}
-	}
-	if len(at) == 0 {
+	inside = slices.DeleteFunc(inside, func(p int) bool { return !keep(doc[start+p]) })
+	if len(inside) == 0 {
 		return doc
 	}
-	return slices.Insert(doc, at[c.r.IntN(len(at))], []byte(s)...)
+	return slices.Insert(doc, start+inside[c.r.IntN(len(inside))], []byte(s)...)
 }
 
 // loneSurrogates appends [...] of one to four strings holding unpaired,

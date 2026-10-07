@@ -189,4 +189,4 @@ func isHex(b []byte) bool {
 	return true
 }
 
-func isWS(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\r' }
+func isWS(b byte) bool { return strings.IndexByte(" \t\n\r", b) >= 0 }

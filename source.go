@@ -29,13 +29,15 @@ func newSource(cfg config) source {
 	switch {
 	case cfg.corpus:
 		return newCorpus(cfg)
-	case cfg.shape != "" && cfg.valueCap > 0:
-		s := newShape(cfg)
-		return cappedSource{builder: s.builder, shape: s}
-	case cfg.shape != "" && shapes[cfg.shape].mirrored:
-		return deepSource{newShape(cfg)}
 	case cfg.shape != "":
-		return newShape(cfg)
+		s := newShape(cfg)
+		switch {
+		case cfg.valueCap > 0:
+			return cappedSource{s}
+		case s.def.leaf != "":
+			return deepSource{s}
+		}
+		return s
 	}
 	return newBuilder(cfg)
 }

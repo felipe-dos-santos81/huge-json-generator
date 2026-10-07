@@ -27,12 +27,12 @@ type shapeDef struct {
 	open, close   string
 	unitsPerChunk int64 // units per giant chunk
 	unit          func(s *shapeSource, idx int64)
-	mirrored      bool // units are openers; closers mirror them (deep)
-	smallValues   bool // units hold small chaos values that -null/-empty affect
+	leaf          string // non-empty: units are openers, closed in mirror order around this leaf (deep)
+	smallValues   bool   // units hold small chaos values that -null/-empty affect
 }
 
 var shapes = map[shapeKind]shapeDef{
-	deep:       {unitsPerChunk: 1 << 18, unit: (*shapeSource).opener, mirrored: true},
+	deep:       {unitsPerChunk: 1 << 18, unit: (*shapeSource).opener, leaf: "0"},
 	wideObject: {open: "{", close: "}", unitsPerChunk: 1 << 14, unit: (*shapeSource).member, smallValues: true},
 	wideArray:  {open: "[", close: "]", unitsPerChunk: 1 << 14, unit: (*shapeSource).element, smallValues: true},
 	longString: {open: `"`, close: `"`, unitsPerChunk: 1 << 12, unit: func(s *shapeSource, _ int64) { s.chars(typedAlphabet, 64) }},
@@ -88,7 +88,7 @@ func (s *shapeSource) chunk(dst []byte, i int64) []byte {
 	return s.buf
 }
 
-// deepSource is a giant mirrored shape (deep): a second pass closes the
+// deepSource is a giant shape with a leaf (deep): a second pass closes the
 // nesting by mirroring each body chunk, rebuilt from its seed, so no opener
 // sequence is ever stored.
 type deepSource struct{ *shapeSource }
@@ -100,7 +100,7 @@ func (d deepSource) tailLen(body []byte) int64 { return int64(openers(body)) }
 func (d deepSource) tail(dst []byte, n, j int64) []byte {
 	d.scratch = d.chunk(d.scratch[:0], n-1-j)
 	if j == 0 {
-		dst = append(dst, '0')
+		dst = append(dst, d.def.leaf...)
 	}
 	return mirror(dst, d.scratch)
 }
@@ -134,12 +134,12 @@ func mirror(dst, run []byte) []byte {
 const maxCap = 256e6
 
 // cappedSource writes records {"id":N,"v":<value of about -cap bytes>}, each
-// value built whole inside its record. The builder (shared with shape)
-// supplies record framing; shape supplies the value's units.
-type cappedSource struct {
-	*builder
-	shape *shapeSource
-}
+// value built whole inside its record.
+type cappedSource struct{ *shapeSource }
+
+// Record framing comes from the builder, not from the shape's open/close.
+func (c cappedSource) header() []byte  { return c.builder.header() }
+func (c cappedSource) trailer() []byte { return c.builder.trailer() }
 
 func (c cappedSource) recordsPerChunk() int64 {
 	return min(1024, max(1, (1<<20)/c.cfg.valueCap))
@@ -154,10 +154,10 @@ func (c cappedSource) chunk(dst []byte, i int64) []byte {
 	return c.records(dst, i, c.recordsPerChunk(), c.cappedRecord)
 }
 
-// cappedRecord appends units until the value, counting the closers a
-// mirrored shape still needs, reaches the cap.
+// cappedRecord appends units until the value, counting the closers and leaf
+// a deep shape still needs, reaches the cap.
 func (c cappedSource) cappedRecord(id int64) {
-	def := c.shape.def
+	def := c.def
 	c.buf = append(c.buf, `{"id":`...)
 	c.buf = strconv.AppendInt(c.buf, id, 10)
 	c.buf = append(c.buf, `,"v":`...)
@@ -166,17 +166,17 @@ func (c cappedSource) cappedRecord(id int64) {
 	budget := c.cfg.valueCap - int64(len(def.open)+len(def.close))
 	for idx := int64(0); ; idx++ {
 		size := int64(len(c.buf) - start)
-		if def.mirrored {
-			size += idx + 1 // a closer per opener, plus the leaf
+		if def.leaf != "" {
+			size += idx + int64(len(def.leaf)) // a closer per opener, plus the leaf
 		}
 		if size >= budget {
 			break
 		}
-		def.unit(c.shape, idx)
+		def.unit(c.shapeSource, idx)
 	}
-	if def.mirrored {
+	if def.leaf != "" {
 		run := c.buf[start:]
-		c.buf = append(c.buf, '0')
+		c.buf = append(c.buf, def.leaf...)
 		c.buf = mirror(c.buf, run)
 	}
 	c.buf = append(c.buf, def.close...)

@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"math"
+	"slices"
 	"strconv"
 	"strings"
 	"testing"
@@ -481,6 +482,22 @@ func TestRecordsBytesUnchanged(t *testing.T) {
 		out := gen(t, "-size", "2MB", "-seed", "9", "-depth", "6", "-schema", c.schema, "-ndjson="+c.ndjson)
 		if got := fmt.Sprintf("%x", sha256.Sum256(out)); got != c.sha {
 			t.Errorf("%s ndjson=%s: sha256 %s, want %s", c.schema, c.ndjson, got, c.sha)
+		}
+	}
+}
+
+// Every flag name validate reasons about must be a declared flag, so a
+// rename cannot silently disable a rule.
+func TestUsedFlagsAreDeclared(t *testing.T) {
+	fs := flags(new(config))
+	names := slices.Clone(universalFlags)
+	for _, cfg := range []config{{}, {corpus: true}, {shape: wideObject}, {shape: deep, valueCap: 1}, {shape: wideArray, valueCap: 1}} {
+		_, used := cfg.usedFlags()
+		names = append(names, used...)
+	}
+	for _, name := range names {
+		if fs.Lookup(name) == nil {
+			t.Errorf("usedFlags names %q, which is not a declared flag", name)
 		}
 	}
 }

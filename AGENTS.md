@@ -49,8 +49,10 @@ make bench      # throughput check after touching value generation
   functions of the config and their indices. `run` writes the body until the
   target (counting pending tail bytes), then, only for a `tailer`, the tail
   (`deep` closers, mirrored from regenerated body chunks), then the trailer.
-- **Flags with no effect are rejected.** `validate` checks explicitly set flags
-  by the `flag*` name constants; add a case when a new mode ignores a flag.
+- **Flags with no effect are rejected.** Each mode lists the flags it reads in
+  `config.usedFlags`; `validate` rejects any other explicitly set flag. A new
+  mode or flag only needs that list updated (`TestUsedFlagsAreDeclared` catches
+  names that are not real flags).
 - **Never write `\u` followed by four hex digits in Go source.** Build JSON
   escapes with `uEscape` and runes with numeric literals (`0xFEFF`); generated
   edits have turned such escapes into raw characters before.
