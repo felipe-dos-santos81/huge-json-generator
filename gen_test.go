@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"testing"
@@ -162,7 +163,7 @@ func checkIDs(t *testing.T, recs []map[string]any) {
 }
 
 func TestValidOutput(t *testing.T) {
-	for _, schema := range []string{"chaos"} {
+	for _, schema := range []string{"chaos", "typed"} {
 		for _, ndjson := range []bool{false, true} {
 			t.Run(fmt.Sprintf("%s/ndjson=%v", schema, ndjson), func(t *testing.T) {
 				out := gen(t, "-size", "5MB", "-schema", schema, "-ndjson="+strconv.FormatBool(ndjson), "-chunk", "64")
@@ -232,6 +233,160 @@ func TestWriteErrorStops(t *testing.T) {
 		}
 		if written != int64(left) {
 			t.Fatalf("left=%d: written = %d", left, written)
+		}
+	}
+}
+
+func TestSchemaChangesOutput(t *testing.T) {
+	a := gen(t, "-size", "100KB", "-chunk", "16")
+	b := gen(t, "-size", "100KB", "-chunk", "16", "-schema", "typed")
+	if bytes.Equal(a, b) {
+		t.Fatal("-schema typed produced the same bytes as chaos")
+	}
+}
+
+// walk records each key path's JSON type in seen, skipping nulls, and fails
+// on integers outside the float64-exact range.
+func walk(t *testing.T, path string, v any, seen map[string]string) {
+	t.Helper()
+	var kind string
+	switch v := v.(type) {
+	case nil:
+		return
+	case string:
+		kind = "string"
+	case bool:
+		kind = "bool"
+	case json.Number:
+		kind = "number"
+		if !strings.ContainsAny(string(v), ".eE") {
+			n, err := strconv.ParseInt(string(v), 10, 64)
+			if err != nil || n > maxSafeInt || n < -maxSafeInt {
+				t.Fatalf("%s: integer %s outside ±(2^53-1)", path, v)
+			}
+		}
+	case []any:
+		kind = "array"
+		for _, e := range v {
+			walk(t, path+"[]", e, seen)
+		}
+	case map[string]any:
+		kind = "object"
+		for k, e := range v {
+			walk(t, path+"."+k, e, seen)
+		}
+	}
+	if prev, ok := seen[path]; ok && prev != kind {
+		t.Fatalf("%s is both %s and %s", path, prev, kind)
+	}
+	seen[path] = kind
+}
+
+func TestTypedStable(t *testing.T) {
+	recs := records(t, gen(t, "-size", "5MB", "-schema", "typed", "-ndjson", "-chunk", "64"), true)
+	seen := map[string]string{}
+	for _, r := range recs {
+		walk(t, "", r, seen)
+	}
+	// Spot-check that deep and nested paths were actually generated.
+	for _, p := range []string{".score", ".items[].qty", ".payload.child.child.n", ".meta.flags[]", ".count", ".données"} {
+		if _, ok := seen[p]; !ok {
+			t.Errorf("path %s never generated", p)
+		}
+	}
+}
+
+// Floats in typed mode always carry a decimal point, never an exponent.
+func TestTypedFloatsFixedPoint(t *testing.T) {
+	recs := records(t, gen(t, "-size", "1MB", "-schema", "typed", "-ndjson", "-chunk", "64"), true)
+	for _, r := range recs {
+		for _, k := range []string{"score", "price"} {
+			if n, ok := r[k].(json.Number); ok && (!strings.Contains(string(n), ".") || strings.ContainsAny(string(n), "eE")) {
+				t.Fatalf("%s = %s, want fixed-point with a decimal point", k, n)
+			}
+		}
+	}
+}
+
+func TestNullRate(t *testing.T) {
+	for _, schema := range []string{"chaos", "typed"} {
+		recs := records(t, gen(t, "-size", "5MB", "-schema", schema, "-ndjson", "-null", "0.2", "-empty", "0", "-chunk", "64"), true)
+		var nulls, total int
+		for _, r := range recs {
+			for k, v := range r {
+				if k == "id" {
+					continue
+				}
+				total++
+				if v == nil {
+					nulls++
+				}
+			}
+		}
+		if rate := float64(nulls) / float64(total); math.Abs(rate-0.2) > 0.02 {
+			t.Errorf("%s: null rate %.3f over %d values, want 0.20 ± 0.02", schema, rate, total)
+		}
+	}
+}
+
+// ---- Review Focus edge cases ----
+
+func TestDepthZero(t *testing.T) {
+	for _, schema := range []string{"chaos", "typed"} {
+		out := gen(t, "-size", "200KB", "-depth", "0", "-schema", schema, "-ndjson", "-chunk", "64")
+		for _, r := range records(t, out, true) {
+			for k, v := range r {
+				switch v := v.(type) {
+				case []any:
+					if schema == "chaos" && len(v) > 0 {
+						t.Fatalf("chaos depth 0: %s is a non-empty array", k)
+					}
+				case map[string]any:
+					if schema == "chaos" && len(v) > 0 {
+						t.Fatalf("chaos depth 0: %s is a non-empty object", k)
+					}
+					if _, ok := v["child"]; ok && k == "payload" {
+						t.Fatal("typed depth 0: payload has a child")
+					}
+				}
+			}
+		}
+	}
+}
+
+func TestAllNull(t *testing.T) {
+	for _, schema := range []string{"chaos", "typed"} {
+		out := gen(t, "-size", "50KB", "-null", "1", "-empty", "0", "-schema", schema, "-ndjson", "-chunk", "64")
+		for _, r := range records(t, out, true) {
+			for k, v := range r {
+				if k != "id" && v != nil {
+					t.Fatalf("%s: -null 1 but %s = %v", schema, k, v)
+				}
+			}
+		}
+	}
+}
+
+func TestTypedAllEmpty(t *testing.T) {
+	out := gen(t, "-size", "50KB", "-null", "0", "-empty", "1", "-schema", "typed", "-ndjson", "-chunk", "64")
+	for _, r := range records(t, out, true) {
+		for k, v := range r {
+			switch v := v.(type) {
+			case string:
+				if v != "" {
+					t.Fatalf("-empty 1: %s = %q", k, v)
+				}
+			case []any:
+				if len(v) != 0 {
+					t.Fatalf("-empty 1: %s has %d elements", k, len(v))
+				}
+			case map[string]any:
+				if len(v) != 0 {
+					t.Fatalf("-empty 1: %s has %d fields", k, len(v))
+				}
+			case nil:
+				t.Fatalf("-empty 1 -null 0: %s is null", k)
+			}
 		}
 	}
 }
