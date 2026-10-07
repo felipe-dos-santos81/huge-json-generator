@@ -6,12 +6,12 @@ import "strconv"
 // otherwise a random scalar, array or object. Only scalars appear at the depth
 // limit.
 func (b *builder) chaosValue(depth int) {
-	x := b.r.Float64()
-	if x < b.cfg.pNull {
+	isNull, isEmpty := b.roll()
+	if isNull {
 		b.buf = append(b.buf, "null"...)
 		return
 	}
-	if x < b.cfg.pNull+b.cfg.pEmpty {
+	if isEmpty {
 		switch b.r.IntN(3) {
 		case 0:
 			b.buf = append(b.buf, `""`...)

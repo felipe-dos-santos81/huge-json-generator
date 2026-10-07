@@ -1,6 +1,8 @@
 package main
 
 import (
+	"encoding/binary"
+	"encoding/hex"
 	"strconv"
 	"time"
 )
@@ -62,25 +64,31 @@ var fields = []struct {
 	{"données", func(b *builder) { b.typedStr(typedAlphabet, 1, 24) }},
 }
 
+// roll draws one value's fate: null below -null, empty in the next -empty band.
+// Every generator rolls exactly once per value, so both schemas share it.
+func (b *builder) roll() (isNull, isEmpty bool) {
+	x := b.r.Float64()
+	return x < b.cfg.pNull, x >= b.cfg.pNull && x < b.cfg.pNull+b.cfg.pEmpty
+}
+
 // nullOrEmpty writes null, or empty (the type's empty form: "", [] or {}), at
 // the configured rates and reports whether it did.
 func (b *builder) nullOrEmpty(empty string) bool {
-	x := b.r.Float64()
-	if x < b.cfg.pNull {
+	switch isNull, isEmpty := b.roll(); {
+	case isNull:
 		b.buf = append(b.buf, "null"...)
-		return true
-	}
-	if x < b.cfg.pNull+b.cfg.pEmpty {
+	case isEmpty:
 		b.buf = append(b.buf, empty...)
-		return true
+	default:
+		return false
 	}
-	return false
+	return true
 }
 
 // null writes null at the -null rate and reports whether it did. Numbers and
 // bools have no empty form, so an empty roll falls through to a normal value.
 func (b *builder) null() bool {
-	if b.r.Float64() < b.cfg.pNull {
+	if isNull, _ := b.roll(); isNull {
 		b.buf = append(b.buf, "null"...)
 		return true
 	}
@@ -185,13 +193,11 @@ func (b *builder) typedHex() {
 	if b.nullOrEmpty(`""`) {
 		return
 	}
+	var raw [16]byte
+	binary.BigEndian.PutUint64(raw[:8], b.r.Uint64())
+	binary.BigEndian.PutUint64(raw[8:], b.r.Uint64())
 	b.buf = append(b.buf, '"')
-	for range 2 {
-		v := b.r.Uint64()
-		for s := 60; s >= 0; s -= 4 {
-			b.buf = append(b.buf, "0123456789abcdef"[v>>s&0xf])
-		}
-	}
+	b.buf = hex.AppendEncode(b.buf, raw[:])
 	b.buf = append(b.buf, '"')
 }
 
