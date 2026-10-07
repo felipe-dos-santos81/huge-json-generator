@@ -40,8 +40,8 @@ func TestCorpus(t *testing.T) {
 }
 
 func TestCorpusIgnoresWorkers(t *testing.T) {
-	a := sha256.Sum256(gen(t, "-corpus", "-size", "1MB", "-workers", "1"))
-	if b := sha256.Sum256(gen(t, "-corpus", "-size", "1MB", "-workers", "8")); a != b {
+	a := sha256.Sum256(gen(t, "-corpus", "-size", "5MB", "-workers", "1"))
+	if b := sha256.Sum256(gen(t, "-corpus", "-size", "5MB", "-workers", "8")); a != b {
 		t.Fatal("-workers changed the corpus")
 	}
 }
@@ -88,6 +88,7 @@ func TestScanSkipsUnicodeEscapeDigits(t *testing.T) {
 
 // Each category's document must carry the defect its name promises.
 func TestCorpusCategoriesHoldTheirDefect(t *testing.T) {
+	truncated := 0
 	out := gen(t, "-corpus", "-size", "3MB")
 	for _, line := range bytes.Split(bytes.TrimSuffix(out, []byte("\n")), []byte("\n")) {
 		var c struct {
@@ -103,6 +104,21 @@ func TestCorpusCategoriesHoldTheirDefect(t *testing.T) {
 			if bytes.Contains(doc, []byte("[,]")) || bytes.Contains(doc, []byte("{,}")) {
 				t.Fatalf("trailing_comma holds a lone comma: %.80q", doc)
 			}
+		case "whitespace":
+			for _, ws := range []byte(" \t\n\r") {
+				if !bytes.Contains(doc, []byte{ws}) {
+					t.Fatalf("whitespace lacks %q: %.80q", ws, doc)
+				}
+			}
+			for _, p := range (&corpusSource{}).structuralIn(doc, "{}[],:") {
+				if !isWS(doc[p-1]) || !isWS(doc[p+1]) {
+					t.Fatalf("whitespace: token %q at %d not surrounded: %.80q", doc[p], p, doc)
+				}
+			}
+		case "bad_escape":
+			if bytes.Contains(doc, []byte(`\`+"u12\"")) {
+				truncated++
+			}
 		case "single_quote":
 			if !singleQuoted(doc) {
 				t.Fatalf("single_quote holds no complete single-quoted string: %.80q", doc)
@@ -116,6 +132,9 @@ func TestCorpusCategoriesHoldTheirDefect(t *testing.T) {
 				t.Fatalf("%s broke a unicode escape: %.80q", c.Category, doc)
 			}
 		}
+	}
+	if truncated == 0 {
+		t.Error("bad_escape never produced a truncated escape before a closing quote")
 	}
 }
 
@@ -169,3 +188,5 @@ func isHex(b []byte) bool {
 	}
 	return true
 }
+
+func isWS(b byte) bool { return b == ' ' || b == '\t' || b == '\n' || b == '\r' }

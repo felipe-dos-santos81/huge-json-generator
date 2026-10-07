@@ -3,29 +3,38 @@ package main
 import "fmt"
 
 // source produces the output in pieces the pipeline can build in parallel.
-// Each worker owns its own source; chunk and tail must be pure functions of
-// the config and their indices so the output never depends on -workers.
-// chunk and tail may be called for indices past where run stops (workers build
-// ahead, and pass 2 can call tail(n, j) with j >= n); those results are
-// discarded, so implementations must accept any index without panicking.
+// Each worker owns its own source; chunk must be a pure function of the
+// config and i so the output never depends on -workers. chunk may be called
+// for indices past where run stops (workers build ahead); those results are
+// discarded, so it must accept any index without panicking.
 type source interface {
-	header() []byte                     // written first
-	chunk(dst []byte, i int64) []byte   // body chunk i
-	tailLen(body []byte) int64          // bytes pass 2 adds for this body chunk (0: none)
+	header() []byte                   // written first
+	chunk(dst []byte, i int64) []byte // body chunk i
+	trailer() []byte                  // written last
+	summary(n int64) string           // what n body chunks hold, for the done line
+}
+
+// tailer is a source whose body must be closed by a second pass (deep
+// nesting). tail has the same purity rule as chunk; pass 2 may call it with
+// j >= n for chunks it then discards.
+type tailer interface {
+	// tailLen is how many closing bytes pass 2 adds for this body chunk; the
+	// first tail chunk may add a constant few more (deep's leaf).
+	tailLen(body []byte) int64
 	tail(dst []byte, n, j int64) []byte // closing chunk j after n body chunks
-	trailer() []byte                    // written last
-	summary(n int64) string             // what n body chunks hold, for the done line
 }
 
 // newSource returns a fresh source for the configured mode.
 func newSource(cfg config) source {
-	if cfg.corpus {
+	switch {
+	case cfg.corpus:
 		return newCorpus(cfg)
-	}
-	if cfg.shape != "" {
-		if cfg.cap > 0 {
-			return cappedSource{newShape(cfg)}
-		}
+	case cfg.shape != "" && cfg.valueCap > 0:
+		s := newShape(cfg)
+		return cappedSource{builder: s.builder, shape: s}
+	case cfg.shape != "" && shapes[cfg.shape].mirrored:
+		return deepSource{newShape(cfg)}
+	case cfg.shape != "":
 		return newShape(cfg)
 	}
 	return newBuilder(cfg)
@@ -46,10 +55,6 @@ func (b *builder) trailer() []byte {
 	}
 	return []byte("\n]\n")
 }
-
-func (b *builder) tailLen([]byte) int64 { return 0 }
-
-func (b *builder) tail(dst []byte, _, _ int64) []byte { return dst }
 
 func (b *builder) summary(n int64) string {
 	return fmt.Sprintf("%d records", n*int64(b.cfg.chunk))

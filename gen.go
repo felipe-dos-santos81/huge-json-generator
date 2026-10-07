@@ -47,6 +47,17 @@ func (s *schema) UnmarshalText(text []byte) error {
 
 const maxDepth = 10 // chaos output grows ~1.4x per nesting level
 
+// Flag names that validate checks by name, shared with their declarations.
+const (
+	flagNDJSON = "ndjson"
+	flagNull   = "null"
+	flagEmpty  = "empty"
+	flagDepth  = "depth"
+	flagSchema = "schema"
+	flagChunk  = "chunk"
+	flagCap    = "cap"
+)
+
 type config struct {
 	target   int64
 	ndjson   bool
@@ -58,7 +69,7 @@ type config struct {
 	workers  int
 	chunk    int
 	shape    shapeKind // "": records
-	cap      int64     // with shape: bytes per capped value; 0: one giant value
+	valueCap int64     // with shape: bytes per capped value; 0: one giant value
 	corpus   bool      // labelled test cases instead of records
 	progress io.Writer // nil: no progress output
 }
@@ -100,21 +111,21 @@ func flags(cfg *config) *flag.FlagSet {
 		cfg.target = v
 		return nil
 	})
-	fs.BoolVar(&cfg.ndjson, "ndjson", false, "one object per line instead of a single array")
+	fs.BoolVar(&cfg.ndjson, flagNDJSON, false, "one object per line instead of a single array")
 	fs.Uint64Var(&cfg.seed, "seed", 42, "RNG seed; same flags give identical output")
-	fs.Float64Var(&cfg.pNull, "null", 0.10, "probability a value is null")
-	fs.Float64Var(&cfg.pEmpty, "empty", 0.10, `probability a value is empty ("", [] or {}); typed numbers/bools are never empty`)
-	fs.IntVar(&cfg.depth, "depth", 4, fmt.Sprintf("maximum nesting depth (0-%d)", maxDepth))
-	fs.TextVar(&cfg.schema, "schema", chaos, "chaos (any type per key) or typed (one type per key)")
+	fs.Float64Var(&cfg.pNull, flagNull, 0.10, "probability a value is null")
+	fs.Float64Var(&cfg.pEmpty, flagEmpty, 0.10, `probability a value is empty ("", [] or {}); typed numbers/bools are never empty`)
+	fs.IntVar(&cfg.depth, flagDepth, 4, fmt.Sprintf("maximum nesting depth (0-%d)", maxDepth))
+	fs.TextVar(&cfg.schema, flagSchema, chaos, "chaos (any type per key) or typed (one type per key)")
 	fs.IntVar(&cfg.workers, "workers", runtime.NumCPU(), "generator goroutines; does not change output")
-	fs.IntVar(&cfg.chunk, "chunk", 1024, "records per chunk; changes output")
+	fs.IntVar(&cfg.chunk, flagChunk, 1024, "records per chunk; changes output")
 	fs.TextVar(&cfg.shape, "shape", shapeKind(""), "write one giant value of this shape: "+shapeNames())
-	fs.Func("cap", "with -shape: write records each holding a value of about this size (at most 256MB)", func(s string) error {
+	fs.Func(flagCap, "with -shape: write records each holding a value of about this size (at most 256MB)", func(s string) error {
 		v, err := parseSize(s)
 		if err != nil || v <= 0 || v > maxCap {
 			return errors.New("want a size from 1B to 256MB")
 		}
-		cfg.cap = v
+		cfg.valueCap = v
 		return nil
 	})
 	fs.BoolVar(&cfg.corpus, "corpus", false, "write labelled y/n/i parser test cases as NDJSON (base64 documents)")
@@ -166,12 +177,16 @@ func (c config) validate(set map[string]bool) error {
 	switch {
 	case c.shape != "" && c.corpus:
 		return errors.New("-shape and -corpus cannot be combined")
-	case set["cap"] && c.shape == "":
+	case set[flagCap] && c.shape == "":
 		return errors.New("-cap needs -shape")
-	case c.shape != "" && c.cap == 0 && c.ndjson:
+	case c.shape != "" && c.valueCap == 0 && c.ndjson:
 		return errors.New("-ndjson needs records, but a giant -shape is one document (add -cap)")
-	case (c.shape != "" || c.corpus) && (set["schema"] || set["depth"] || set["chunk"]):
+	case c.corpus && set[flagNDJSON]:
+		return errors.New("-ndjson has no effect with -corpus, which always writes NDJSON")
+	case (c.shape != "" || c.corpus) && (set[flagSchema] || set[flagDepth] || set[flagChunk]):
 		return errors.New("-schema, -depth and -chunk only apply to records")
+	case c.shape != "" && !shapes[c.shape].smallValues && (set[flagNull] || set[flagEmpty]):
+		return errors.New("-null and -empty only affect records, the corpus, wide-object and wide-array")
 	case !(c.pNull >= 0) || !(c.pEmpty >= 0) || !(c.pNull+c.pEmpty <= 1): // NaN fails
 		return errors.New("-null and -empty must be >= 0 and sum to at most 1")
 	case c.depth < 0 || c.depth > maxDepth:
@@ -184,6 +199,9 @@ func (c config) validate(set map[string]bool) error {
 	return nil
 }
 
+// buildFunc builds chunk i of one pass into dst, using a worker's own source.
+type buildFunc func(s source, dst []byte, i int64) []byte
+
 type chunkOut struct {
 	idx int64
 	buf *[]byte
@@ -192,7 +210,7 @@ type chunkOut struct {
 // startWorkers launches cfg.workers goroutines, each with its own source. Each
 // takes a token, claims the next chunk index, builds that chunk into a pooled
 // buffer and sends it on results, until stop is closed.
-func startWorkers(cfg config, build func(s source, dst []byte, i int64) []byte, pool *sync.Pool, tokens <-chan struct{}, results chan<- chunkOut, stop <-chan struct{}) {
+func startWorkers(cfg config, build buildFunc, pool *sync.Pool, tokens <-chan struct{}, results chan<- chunkOut, stop <-chan struct{}) {
 	var next atomic.Int64
 	for range cfg.workers {
 		go func() {
@@ -219,7 +237,7 @@ func startWorkers(cfg config, build func(s source, dst []byte, i int64) []byte, 
 // pipeline builds chunks 0, 1, 2, ... with build on cfg.workers goroutines and
 // hands them to emit strictly in index order, until emit reports no more or an
 // error. At most 2*workers chunks are in flight.
-func pipeline(cfg config, build func(s source, dst []byte, i int64) []byte, emit func(i int64, chunk []byte) (more bool, err error)) error {
+func pipeline(cfg config, build buildFunc, emit func(i int64, chunk []byte) (more bool, err error)) error {
 	stop := make(chan struct{})
 	defer close(stop) // releases workers on every return path
 
@@ -274,29 +292,32 @@ func run(w io.Writer, cfg config) (summary string, written int64, err error) {
 	if err = write(src.header()); err != nil {
 		return
 	}
-	var n, pendingTail int64
+	t, hasTail := src.(tailer)
+	var bodyChunks, pendingTail int64
 	err = pipeline(cfg, source.chunk, func(i int64, c []byte) (bool, error) {
-		n = i + 1
+		bodyChunks = i + 1
 		if err := write(c); err != nil {
 			return false, err
 		}
-		pendingTail += src.tailLen(c)
+		if hasTail {
+			pendingTail += t.tailLen(c)
+		}
 		return written+pendingTail < cfg.target, nil
 	})
 	if err != nil {
 		return
 	}
 	if pendingTail > 0 {
-		tail := func(s source, dst []byte, j int64) []byte { return s.tail(dst, n, j) }
+		tail := func(s source, dst []byte, j int64) []byte { return s.(tailer).tail(dst, bodyChunks, j) }
 		err = pipeline(cfg, tail, func(j int64, c []byte) (bool, error) {
-			return j+1 < n, write(c)
+			return j+1 < bodyChunks, write(c)
 		})
 		if err != nil {
 			return
 		}
 	}
 	err = write(src.trailer())
-	return src.summary(n), written, err
+	return src.summary(bodyChunks), written, err
 }
 
 // report prints one progress line: bytes written, target, and average rate.

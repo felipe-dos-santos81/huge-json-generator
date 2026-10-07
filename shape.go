@@ -24,18 +24,22 @@ const (
 // its units over chunks; unit idx is global, so commas and keys depend only
 // on the index.
 type shapeDef struct {
-	open, close string
-	perChunk    int64 // units per giant chunk
-	unit        func(s *shapeSource, idx int64)
+	open, close   string
+	unitsPerChunk int64 // units per giant chunk
+	unit          func(s *shapeSource, idx int64)
+	mirrored      bool // units are openers; closers mirror them (deep)
+	smallValues   bool // units hold small chaos values that -null/-empty affect
 }
 
 var shapes = map[shapeKind]shapeDef{
-	deep:       {"", "", 1 << 18, (*shapeSource).opener},
-	wideObject: {"{", "}", 1 << 14, (*shapeSource).member},
-	wideArray:  {"[", "]", 1 << 14, (*shapeSource).element},
-	longString: {`"`, `"`, 1 << 12, func(s *shapeSource, _ int64) { s.chars(typedAlphabet, 64) }},
-	escapes:    {`"`, `"`, 1 << 17, func(s *shapeSource, _ int64) { s.escape() }},
-	bigNum:     {"1", ".5e-7", 1 << 20, func(s *shapeSource, _ int64) { s.buf = append(s.buf, byte('0'+s.r.IntN(10))) }},
+	deep:       {unitsPerChunk: 1 << 18, unit: (*shapeSource).opener, mirrored: true},
+	wideObject: {open: "{", close: "}", unitsPerChunk: 1 << 14, unit: (*shapeSource).member, smallValues: true},
+	wideArray:  {open: "[", close: "]", unitsPerChunk: 1 << 14, unit: (*shapeSource).element, smallValues: true},
+	longString: {open: `"`, close: `"`, unitsPerChunk: 1 << 12, unit: func(s *shapeSource, _ int64) { s.chars(typedAlphabet, 64) }},
+	escapes:    {open: `"`, close: `"`, unitsPerChunk: 1 << 17, unit: func(s *shapeSource, _ int64) { s.escape() }},
+	bigNum: {open: "1", close: ".5e-7", unitsPerChunk: 1 << 20, unit: func(s *shapeSource, _ int64) {
+		s.buf = append(s.buf, byte('0'+s.r.IntN(10)))
+	}},
 }
 
 func shapeNames() string {
@@ -74,33 +78,31 @@ func (s *shapeSource) trailer() []byte { return []byte(s.def.close) }
 
 func (s *shapeSource) summary(int64) string { return fmt.Sprintf("1 %s value", s.kind) }
 
-// chunk writes units [i*perChunk, (i+1)*perChunk) of the giant value.
+// chunk writes units [i*unitsPerChunk, (i+1)*unitsPerChunk) of the giant value.
 func (s *shapeSource) chunk(dst []byte, i int64) []byte {
 	s.pcg.Seed(s.cfg.seed, uint64(i))
 	s.buf = dst
-	for idx := i * s.def.perChunk; idx < (i+1)*s.def.perChunk; idx++ {
+	for idx := i * s.def.unitsPerChunk; idx < (i+1)*s.def.unitsPerChunk; idx++ {
 		s.def.unit(s, idx)
 	}
 	return s.buf
 }
 
-// tailLen is the number of closers a deep body chunk needs: one per opener.
-func (s *shapeSource) tailLen(body []byte) int64 {
-	if s.kind != deep {
-		return 0
-	}
-	return int64(openers(body))
-}
+// deepSource is a giant mirrored shape (deep): a second pass closes the
+// nesting by mirroring each body chunk, rebuilt from its seed, so no opener
+// sequence is ever stored.
+type deepSource struct{ *shapeSource }
 
-// tail closes deep nesting: chunk j mirrors body chunk n-1-j, rebuilt from its
-// seed, so no opener sequence is ever stored. The first tail chunk starts
-// with the leaf value.
-func (s *shapeSource) tail(dst []byte, n, j int64) []byte {
-	s.scratch = s.chunk(s.scratch[:0], n-1-j)
+// tailLen is one closer per opener in the body chunk.
+func (d deepSource) tailLen(body []byte) int64 { return int64(openers(body)) }
+
+// tail mirrors body chunk n-1-j; the first tail chunk starts with the leaf.
+func (d deepSource) tail(dst []byte, n, j int64) []byte {
+	d.scratch = d.chunk(d.scratch[:0], n-1-j)
 	if j == 0 {
 		dst = append(dst, '0')
 	}
-	return mirror(dst, s.scratch)
+	return mirror(dst, d.scratch)
 }
 
 // openers counts the [ and { in a run of deep openers.
@@ -127,50 +129,57 @@ func mirror(dst, run []byte) []byte {
 	return dst
 }
 
-// maxCap bounds -cap: capped chunks hold at least one value, so memory is
-// about 2 x workers x cap.
+// maxCap bounds -cap: capped chunks hold at least one value and append growth
+// overshoots it, so memory is about 3 x workers x cap.
 const maxCap = 256e6
 
 // cappedSource writes records {"id":N,"v":<value of about -cap bytes>}, each
-// value built whole inside its record.
-type cappedSource struct{ *shapeSource }
+// value built whole inside its record. The builder (shared with shape)
+// supplies record framing; shape supplies the value's units.
+type cappedSource struct {
+	*builder
+	shape *shapeSource
+}
 
-func (c cappedSource) header() []byte         { return c.builder.header() }
-func (c cappedSource) trailer() []byte        { return c.builder.trailer() }
-func (c cappedSource) tailLen([]byte) int64   { return 0 }
-func (c cappedSource) perChunk() int64        { return min(1024, max(1, (1<<20)/c.cfg.cap)) }
-func (c cappedSource) summary(n int64) string { return fmt.Sprintf("%d records", n*c.perChunk()) }
+func (c cappedSource) recordsPerChunk() int64 {
+	return min(1024, max(1, (1<<20)/c.cfg.valueCap))
+}
+
+func (c cappedSource) summary(n int64) string {
+	return fmt.Sprintf("%d records", n*c.recordsPerChunk())
+}
 
 func (c cappedSource) chunk(dst []byte, i int64) []byte {
 	c.pcg.Seed(c.cfg.seed, uint64(i))
-	return c.records(dst, i, c.perChunk(), c.cappedRecord)
+	return c.records(dst, i, c.recordsPerChunk(), c.cappedRecord)
 }
 
-// cappedRecord appends units until the value, counting the closers deep
-// still needs, reaches the cap.
+// cappedRecord appends units until the value, counting the closers a
+// mirrored shape still needs, reaches the cap.
 func (c cappedSource) cappedRecord(id int64) {
+	def := c.shape.def
 	c.buf = append(c.buf, `{"id":`...)
 	c.buf = strconv.AppendInt(c.buf, id, 10)
 	c.buf = append(c.buf, `,"v":`...)
-	c.buf = append(c.buf, c.def.open...)
+	c.buf = append(c.buf, def.open...)
 	start := len(c.buf)
-	budget := c.cfg.cap - int64(len(c.def.open)+len(c.def.close))
+	budget := c.cfg.valueCap - int64(len(def.open)+len(def.close))
 	for idx := int64(0); ; idx++ {
 		size := int64(len(c.buf) - start)
-		if c.kind == deep {
+		if def.mirrored {
 			size += idx + 1 // a closer per opener, plus the leaf
 		}
 		if size >= budget {
 			break
 		}
-		c.def.unit(c.shapeSource, idx)
+		def.unit(c.shape, idx)
 	}
-	if c.kind == deep {
+	if def.mirrored {
 		run := c.buf[start:]
 		c.buf = append(c.buf, '0')
 		c.buf = mirror(c.buf, run)
 	}
-	c.buf = append(c.buf, c.def.close...)
+	c.buf = append(c.buf, def.close...)
 	c.buf = append(c.buf, '}')
 }
 
@@ -200,34 +209,4 @@ func (s *shapeSource) element(idx int64) {
 		s.buf = append(s.buf, ',')
 	}
 	s.small()
-}
-
-var (
-	simpleEscapes = []string{`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`}
-	rawMultibyte  = []rune(accented + "日本語한국" + "😀🚀")
-)
-
-// escape writes one escape-heavy unit: a simple escape, a \u escape of a
-// non-surrogate BMP code point, a surrogate pair, or a raw multi-byte rune.
-func (b *builder) escape() {
-	switch b.r.IntN(4) {
-	case 0:
-		b.buf = append(b.buf, simpleEscapes[b.r.IntN(len(simpleEscapes))]...)
-	case 1:
-		v := b.r.IntN(0xF800) // skip the surrogate block D800–DFFF
-		if v >= 0xD800 {
-			v += 0x800
-		}
-		b.uEscape(v)
-	case 2:
-		b.uEscape(0xD800 + b.r.IntN(0x400))
-		b.uEscape(0xDC00 + b.r.IntN(0x400))
-	default:
-		b.buf = append(b.buf, string(rawMultibyte[b.r.IntN(len(rawMultibyte))])...)
-	}
-}
-
-func (b *builder) uEscape(v int) {
-	const hex = "0123456789abcdef"
-	b.buf = append(b.buf, '\\', 'u', hex[v>>12&0xf], hex[v>>8&0xf], hex[v>>4&0xf], hex[v&0xf])
 }

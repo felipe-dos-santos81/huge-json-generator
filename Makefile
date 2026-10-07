@@ -40,9 +40,9 @@ bench: build ## Measure throughput to /dev/null for both schemas (usage: make be
 		$(BIN) -size "$(size)" -schema $$s $(args) 2>&1 >/dev/null | grep '^done'; \
 	done
 
-shape: build ## Write one extreme value to out/ (usage: make shape shape=deep [size=1GB] [cap=10MB])
+shape: build ## Write extreme values to out/ (usage: make shape shape=deep [size=1GB] [cap=10MB [ndjson=1]])
 	@mkdir -p $(OUT_DIR)
-	$(BIN) -shape "$(shape)" -size "$(size)" $(if $(cap),-cap "$(cap)" -ndjson) $(args) > $(OUT_DIR)/shape-$(shape)-$(size).$(if $(cap),ndjson,json)
+	$(BIN) -shape "$(shape)" -size "$(size)" $(if $(cap),-cap "$(cap)") $(if $(ndjson),-ndjson) $(args) > $(OUT_DIR)/shape-$(shape)-$(size).$(EXT)
 
 corpus: build ## Write labelled parser test cases to out/ (usage: make corpus [size=100MB])
 	@mkdir -p $(OUT_DIR)
@@ -53,7 +53,7 @@ corpus: build ## Write labelled parser test cases to out/ (usage: make corpus [s
 test: ## Run the unit test suite
 	go test -count=1 ./...
 
-test-race: ## Run the unit test suite under the race detector (~15 s)
+test-race: ## Run the unit test suite under the race detector (~2 min)
 	go test -count=1 -race ./...
 
 vet: ## Run go vet

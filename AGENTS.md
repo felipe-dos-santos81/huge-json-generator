@@ -8,11 +8,11 @@ do not add dependencies.
 | File | Responsibility |
 |---|---|
 | `gen.go` | `config` and `schema`, flags (`flags`, `usage`, `parseConfig`, `validate`), the ordered parallel pipeline (`startWorkers`, `pipeline`, `run`), `main` |
-| `value.go` | Per-worker `builder`: `chunk()` framing, `record`/`someFields` key selection, `strN` escaping, shared alphabets |
+| `value.go` | Per-worker `builder`: `chunk()`/`records()` framing, `record`/`someFields` key selection, `strN`/`chars`/`escape`/`uEscape` escaping, shared alphabets |
 | `chaos.go` | `chaosValue`: any key may hold any type |
 | `typed.go` | `fields` table (every key, in order, with its typed generator) and the `typed*` helpers |
-| `source.go` | `source` interface (header, body chunks, optional tail, trailer) and the records source |
-| `shape.go` | `-shape`: giant values (`shapeSource`, `deep` mirrored tail) and capped records (`cappedSource`) |
+| `source.go` | `source` interface (header, body chunks, trailer, summary), the optional `tailer` (closing pass), `newSource`, and the records source |
+| `shape.go` | `-shape`: the `shapes` table, giant values (`shapeSource`; `deepSource` adds the mirrored tail) and capped records (`cappedSource`) |
 | `corpus.go` | `-corpus`: the y/n/i `catalogue`, mutations of valid records, the `acceptable` reference check |
 | `gen_test.go` | Records and CLI tests, stdlib `testing` only |
 | `shape_test.go` | `-shape` tests, including the `nesting` checker |
@@ -45,10 +45,12 @@ make bench      # throughput check after touching value generation
 - **Refactors must not change output bytes.** Compare `shasum` of a fixed-seed
   run before and after, for both schemas and both output forms.
 
-- **Every mode is a `source`.** `chunk` and `tail` must be pure functions of the
-  config and their indices. `run` writes the body until the target (counting
-  pending tail bytes), then the tail (`deep` closers, mirrored from regenerated
-  body chunks), then the trailer.
+- **Every mode is a `source`.** `chunk` (and a `tailer`'s `tail`) must be pure
+  functions of the config and their indices. `run` writes the body until the
+  target (counting pending tail bytes), then, only for a `tailer`, the tail
+  (`deep` closers, mirrored from regenerated body chunks), then the trailer.
+- **Flags with no effect are rejected.** `validate` checks explicitly set flags
+  by the `flag*` name constants; add a case when a new mode ignores a flag.
 - **Never write `\u` followed by four hex digits in Go source.** Build JSON
   escapes with `uEscape` and runes with numeric literals (`0xFEFF`); generated
   edits have turned such escapes into raw characters before.

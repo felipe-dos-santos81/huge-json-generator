@@ -70,8 +70,10 @@ it is generated. Filter with `jq`, for example
 
 Giant values stream at 1–2 GB/s in under 100 MB of memory. Capped chunks hold at
 least one value, so memory grows to about 3 × workers × `-cap` (at most 256 MB
-per value). `-schema`, `-depth` and `-chunk` apply only to records and are
-rejected when given with `-shape` or `-corpus`.
+per value). Flags that would have no effect are rejected rather than ignored:
+`-schema`, `-depth` and `-chunk` with `-shape` or `-corpus`; `-ndjson` with
+`-corpus` (always NDJSON) or a giant shape (one document); `-null` and `-empty`
+with shapes other than `wide-object` and `wide-array`.
 
 ## Determinism
 

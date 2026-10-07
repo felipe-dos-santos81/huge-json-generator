@@ -145,3 +145,33 @@ func (b *builder) nextKey(k string) {
 	b.buf = append(b.buf, ',')
 	b.key(k)
 }
+
+var (
+	simpleEscapes = []string{`\"`, `\\`, `\/`, `\b`, `\f`, `\n`, `\r`, `\t`}
+	rawMultibyte  = []rune(accented + "日本語한국" + "😀🚀")
+)
+
+// escape writes one escape-heavy unit: a simple escape, a \u escape of a
+// non-surrogate BMP code point, a surrogate pair, or a raw multi-byte rune.
+func (b *builder) escape() {
+	switch b.r.IntN(4) {
+	case 0:
+		b.buf = append(b.buf, simpleEscapes[b.r.IntN(len(simpleEscapes))]...)
+	case 1:
+		v := b.r.IntN(0xF800) // skip the surrogate block D800–DFFF
+		if v >= 0xD800 {
+			v += 0x800
+		}
+		b.uEscape(v)
+	case 2:
+		b.uEscape(0xD800 + b.r.IntN(0x400))
+		b.uEscape(0xDC00 + b.r.IntN(0x400))
+	default:
+		b.buf = append(b.buf, string(rawMultibyte[b.r.IntN(len(rawMultibyte))])...)
+	}
+}
+
+func (b *builder) uEscape(v int) {
+	const hex = "0123456789abcdef"
+	b.buf = append(b.buf, '\\', 'u', hex[v>>12&0xf], hex[v>>8&0xf], hex[v>>4&0xf], hex[v&0xf])
+}

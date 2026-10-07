@@ -54,6 +54,11 @@ New errors (one line on stderr with ` (see -h)`, exit 2):
 - `-ndjson` with a giant shape (single document)
 - `-schema`, `-depth` or `-chunk` set explicitly together with `-shape` or `-corpus`
   (they have no effect there)
+- `-ndjson` set explicitly with `-corpus` (it always writes NDJSON)
+- `-null` or `-empty` set explicitly with a shape other than `wide-object` /
+  `wide-array` (only those shapes hold small values)
+
+`-h` prints a synopsis, usage examples for every mode, and the flag defaults.
 
 ## Engine
 
@@ -61,13 +66,20 @@ New errors (one line on stderr with ` (see -h)`, exit 2):
 
 ```go
 type source interface {
-	header() []byte                      // written first
-	chunk(dst []byte, i int64) []byte    // pure function of (config, i)
-	tailLen(body []byte) int64           // bytes pass 2 will add for this body chunk (0: no tail)
-	tail(dst []byte, n, j int64) []byte  // j-th closing chunk after n body chunks
-	trailer() []byte                     // written last
+	header() []byte                    // written first
+	chunk(dst []byte, i int64) []byte  // pure function of (config, i)
+	trailer() []byte                   // written last
+	summary(n int64) string            // what n body chunks hold, for the done line
+}
+
+// Only sources whose body needs a closing pass (deep) implement tailer.
+type tailer interface {
+	tailLen(body []byte) int64          // closing bytes pass 2 adds for this body chunk
+	tail(dst []byte, n, j int64) []byte // j-th closing chunk after n body chunks
 }
 ```
+
+The `done:` line reports `summary(n)`: `N records`, `N cases`, or `1 <shape> value`.
 
 - **Pass 1 (body):** unchanged pipeline (2N tokens, ordered writer). Stops after
   the first chunk where `written + pendingTail ≥ target`, where `pendingTail`
@@ -182,6 +194,16 @@ Manual (probing parsers; findings are reported, not fixed):
 - Makefile: `make shape shape=NAME [cap=SIZE] [size=…]`, `make corpus [size=…]`.
 - AGENTS.md: new files and the source/two-pass invariants.
 - Main spec: CLI table points here for `-shape`, `-cap`, `-corpus`.
+
+## Verified (2026-10-07, 14 cores, Go 1.27.1)
+
+- 1 GB per giant shape (deep, longstring, escapes, wide-object, bignum):
+  0.55–0.84 s each, max RSS 18–64 MB.
+- Python 3.12 (`json.load`, recursion limit raised to 10**6) raises
+  `RecursionError` on `jsongen -shape deep -size 100MB` (already at 2–3 MB).
+- jq 1.7.1 accepts 95 of 600 corpus `n` cases: all `empty_document` and
+  `invalid_utf8`, about half of `trailing_garbage`, some `bad_number` — partly
+  jq design choices (it reads a stream of values; it accepts `nan`).
 
 ## Out of scope
 
