@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"errors"
+	"flag"
 	"fmt"
 	"math"
 	"strconv"
@@ -43,7 +44,7 @@ func TestParseSize(t *testing.T) {
 func TestParseConfigDefaults(t *testing.T) {
 	cfg := cfgFor(t)
 	if cfg.target != 50e9 || cfg.ndjson || cfg.seed != 42 || cfg.pNull != 0.1 ||
-		cfg.pEmpty != 0.1 || cfg.depth != 4 || cfg.typed || cfg.workers < 1 || cfg.chunk != 1024 {
+		cfg.pEmpty != 0.1 || cfg.depth != 4 || cfg.schema != chaos || cfg.workers < 1 || cfg.chunk != 1024 {
 		t.Fatalf("unexpected defaults: %+v", cfg)
 	}
 }
@@ -56,6 +57,7 @@ func TestParseConfigRejects(t *testing.T) {
 		{"-schema", "strict"},
 		{"-depth", "11"}, {"-null", "NaN"}, {"-empty", "NaN"},
 		{"-ndjson", "true"}, {"10MB"},
+		{"-workers", "abc"}, {"-bogus"},
 	} {
 		if _, err := parseConfig(args); err == nil {
 			t.Errorf("parseConfig(%q) succeeded, want error", args)
@@ -63,11 +65,23 @@ func TestParseConfigRejects(t *testing.T) {
 	}
 }
 
+// Flag-syntax errors come back as one-line errors instead of exiting, and
+// -h reports flag.ErrHelp so main can print the usage.
+func TestParseConfigSyntaxErrors(t *testing.T) {
+	_, err := parseConfig([]string{"-workers", "abc"})
+	if err == nil || strings.Contains(err.Error(), "\n") {
+		t.Errorf("-workers abc: err = %q, want a one-line error", err)
+	}
+	if _, err := parseConfig([]string{"-h"}); !errors.Is(err, flag.ErrHelp) {
+		t.Errorf("-h: err = %v, want flag.ErrHelp", err)
+	}
+}
+
 func TestParseConfigFlags(t *testing.T) {
 	cfg := cfgFor(t, "-size", "2MiB", "-ndjson", "-seed", "7", "-null", "0.3", "-empty", "0.2",
 		"-depth", "10", "-schema", "typed", "-workers", "3", "-chunk", "5")
 	want := config{target: 2 << 20, ndjson: true, seed: 7, pNull: 0.3, pEmpty: 0.2,
-		depth: 10, typed: true, workers: 3, chunk: 5}
+		depth: 10, schema: typed, workers: 3, chunk: 5}
 	if cfg != want {
 		t.Fatalf("got %+v, want %+v", cfg, want)
 	}
@@ -415,14 +429,14 @@ func TestTypedAllEmpty(t *testing.T) {
 	}
 }
 
-// tFixed must stay below max and keep its decimals, even for the largest draw.
+// typedFixed must stay below its limit and keep its decimals, even for the largest draw.
 func TestFixedRange(t *testing.T) {
 	b := newBuilder(cfgFor(t, "-null", "0", "-empty", "0"))
 	b.pcg.Seed(1, 2)
 	seen := map[string]bool{}
 	for range 1000 {
 		b.buf = b.buf[:0]
-		b.tFixed(1, 1)
+		b.typedFixed(1, 1)
 		seen[string(b.buf)] = true
 	}
 	for d := range 10 {

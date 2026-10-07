@@ -37,7 +37,7 @@ generate: build ## Write a payload to out/ (usage: make generate size=50GB [sche
 bench: build ## Measure throughput to /dev/null for both schemas (usage: make bench [size=1GB] [args="-workers 1"])
 	@for s in chaos typed; do \
 		printf '%-6s ' $$s; \
-		$(BIN) -size "$(size)" -schema $$s $(args) 2>&1 >/dev/null | tr '\r' '\n' | grep '^done'; \
+		$(BIN) -size "$(size)" -schema $$s $(args) 2>&1 >/dev/null | grep '^done'; \
 	done
 
 # ── Development ───────────────────────────────────────────────────────────────
