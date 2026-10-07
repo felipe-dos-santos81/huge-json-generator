@@ -1,6 +1,10 @@
 package main
 
 import (
+	"bytes"
+	"encoding/json"
+	"strconv"
+	"strings"
 	"testing"
 )
 
@@ -50,5 +54,85 @@ func TestParseConfigRejects(t *testing.T) {
 		if _, err := parseConfig(args); err == nil {
 			t.Errorf("parseConfig(%q) succeeded, want error", args)
 		}
+	}
+}
+
+// records decodes array or NDJSON output into objects, failing on invalid JSON.
+func records(t *testing.T, out []byte, ndjson bool) []map[string]any {
+	t.Helper()
+	var recs []map[string]any
+	if !ndjson {
+		if !json.Valid(out) {
+			t.Fatal("array output is not valid JSON")
+		}
+		dec := json.NewDecoder(bytes.NewReader(out))
+		dec.UseNumber()
+		if err := dec.Decode(&recs); err != nil {
+			t.Fatal(err)
+		}
+		return recs
+	}
+	if len(out) == 0 || out[len(out)-1] != '\n' {
+		t.Fatal("NDJSON output must end with a newline")
+	}
+	for i, line := range bytes.Split(out[:len(out)-1], []byte("\n")) {
+		if !json.Valid(line) {
+			t.Fatalf("line %d is not valid JSON: %.200s", i, line)
+		}
+		dec := json.NewDecoder(bytes.NewReader(line))
+		dec.UseNumber()
+		var m map[string]any
+		if err := dec.Decode(&m); err != nil {
+			t.Fatal(err)
+		}
+		recs = append(recs, m)
+	}
+	return recs
+}
+
+func TestChaosChunkValid(t *testing.T) {
+	b := newBuilder(cfgFor(t, "-chunk", "256", "-ndjson"))
+	for i := int64(0); i < 4; i++ {
+		recs := records(t, b.chunk(nil, i), true)
+		if len(recs) != 256 {
+			t.Fatalf("chunk %d: %d records, want 256", i, len(recs))
+		}
+		for j, r := range recs {
+			if want := json.Number(strconv.FormatInt(i*256+int64(j), 10)); r["id"] != want {
+				t.Fatalf("chunk %d record %d: id %v, want %s", i, j, r["id"], want)
+			}
+		}
+	}
+}
+
+// In array mode only record 0 lacks the ",\n" separator.
+func TestChunkArrayFraming(t *testing.T) {
+	b := newBuilder(cfgFor(t, "-chunk", "8"))
+	if c := b.chunk(nil, 0); !bytes.HasPrefix(c, []byte(`{"id":0`)) {
+		t.Fatalf("chunk 0 starts with %.20q", c)
+	}
+	if c := b.chunk(nil, 1); !bytes.HasPrefix(c, []byte(",\n{\"id\":8")) {
+		t.Fatalf("chunk 1 starts with %.20q", c)
+	}
+}
+
+// Chunks with neighbouring indices must not share their random stream.
+func TestChunksDiffer(t *testing.T) {
+	b := newBuilder(cfgFor(t, "-chunk", "4", "-ndjson"))
+	strip := func(c []byte) string { // drop the "id" values, which always differ
+		var parts []string
+		for _, line := range strings.Split(string(c), "\n") {
+			if i := strings.IndexByte(line, ','); i >= 0 {
+				parts = append(parts, line[i:])
+			}
+		}
+		return strings.Join(parts, "\n")
+	}
+	a := strip(b.chunk(nil, 0))
+	if a == strip(b.chunk(nil, 1)) {
+		t.Fatal("chunk 0 and chunk 1 have identical content")
+	}
+	if a != strip(b.chunk(nil, 0)) {
+		t.Fatal("rebuilding chunk 0 gave different content")
 	}
 }
